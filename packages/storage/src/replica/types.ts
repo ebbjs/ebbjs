@@ -63,16 +63,6 @@ export interface MembershipChange extends ChangeBase {
 }
 
 /**
- * Whether the replica retains a component's value. Residency is declared per
- * component (`<model>/<leaf>`), not per row: a note's metadata can be held
- * while its body is leased only while a read needs it (#802, #933). A row is
- * resident iff any of its components is held or claimed by a lease.
- */
-export interface MaterializationPolicy {
-  holds(component: string): boolean;
-}
-
-/**
  * The declared version of a component (`<model>/<leaf>`). The replica stamps
  * this on a write so a later schema upgrade can read-migrate a stored value
  * from the version it was materialized at (#804).
@@ -82,7 +72,6 @@ export interface ComponentVersionPolicy {
 }
 
 export interface ReplicaOptions {
-  readonly materialization?: MaterializationPolicy;
   /**
    * Declared component versions. A write stamps its component at the declared
    * version; a loaded record keeps the stamps it persisted. Without it every
@@ -92,7 +81,8 @@ export interface ReplicaOptions {
   /**
    * Reads one component from the local stores when a `read` misses. The
    * returned row carries the component's value and the row metadata; the
-   * replica installs only what it is asked for. Without it a read stays a miss.
+   * replica adopts the row, keeping any value it already holds for itself.
+   * Without it a read stays a miss.
    */
   readonly readComponent?: (id: string, component: string) => Promise<Entity | null>;
   /**
@@ -116,30 +106,14 @@ export interface ReplicaStats {
   readonly entities: number;
   /** Materialized row count per model. */
   readonly byModel: Readonly<Record<string, number>>;
-  /** Rows retained because at least one of their components is held. */
-  readonly held: number;
-  /** Held row count per model; excludes rows resident only through a lease. */
-  readonly heldByModel: Readonly<Record<string, number>>;
   /**
    * Lease counts: which `(entity, component)` values are leased, which are
    * waiting out their grace period, and the age of the longest wait — overall
    * and per component name.
    */
   readonly leases: LeaseStats;
-  /** Components present on resident rows: held, leased, or overlaid. */
+  /** Components carried by resident rows. */
   readonly components: number;
-  /** Components whose value is in the composed view. */
-  readonly residentComponents: number;
-  /** Held component count per component name: the retained metadata footprint. */
-  readonly heldComponents: Readonly<Record<string, number>>;
-  /**
-   * Components known to exist on a resident row but whose value is not
-   * resident, per component name. A held note with a lazy body reports its body
-   * here.
-   */
-  readonly nonResidentComponents: Readonly<Record<string, number>>;
-  /** Total components known to exist on a resident row without their value. */
-  readonly nonResident: number;
   readonly revision: Revision;
   /** Append cursor of the last durable position folded into the base. */
   readonly position: number;
@@ -186,9 +160,9 @@ export interface MembershipQuery {
  * Reads return the replica's own row objects (shared, not cloned), tombstones
  * included; callers must treat them as immutable.
  *
- * A row may be partial: components the policy does not hold are absent from its
- * fields while the replica still knows they exist (`components()` includes
- * them). Reading a component installs its value under a lease.
+ * A row the replica holds carries a value for every component it knows about:
+ * a component whose value is absent was never delivered or has left with the
+ * row, and the local store is its read source.
  */
 export interface Replica {
   readonly revision: Revision;
@@ -213,20 +187,24 @@ export interface Replica {
    * the model index with the overlay's model overrides layered on top.
    */
   iterate(model: string): readonly Entity[];
-  /** Whether the materialization policy holds `component` (`<model>/<leaf>`). */
-  isHeld(component: string): boolean;
-  /** Whether every component the row carries is held, so it needs no open. */
-  isRowHeld(row: Entity): boolean;
   /**
-   * Read one row for projection: install the named components the policy does
+   * Whether the replica holds a value for every component `row` carries. Asked
+   * of a row read from the local store, it answers whether the replica's own
+   * copy is complete — the rule that keeps a partial copy from standing in for
+   * the store's row. A row the replica folded is always fully resident: a row
+   * leaves whole rather than losing a component.
+   */
+  fullyResident(row: Entity): boolean;
+  /**
+   * Read one row for projection: install the named components the replica does
    * not hold, claiming each for the duration of the read and releasing it
    * before returning. A released value stays resident for one residency grace
    * period, so a remount inside it reads nothing, and a leased value is never
    * released at all. Idempotent and shared: a resident component is not
-   * re-read, a concurrent read of the same component shares the in-flight one,
-   * and a held component is returned as it is. Reading never releases another
-   * component: there is no cap. Resolves to the composed row, or `null` when
-   * the row is not resident and every read misses.
+   * re-read, and a concurrent read of the same component shares the in-flight
+   * one. Reading never releases another component: there is no cap. Resolves
+   * to the composed row, or `null` when the row is not resident and every read
+   * misses.
    */
   read(id: string, components: readonly string[]): Promise<Entity | null>;
   /**
@@ -234,9 +212,10 @@ export interface Replica {
    * them, installing any the replica does not hold. The returned release is
    * idempotent; releasing the last claim makes the value inactive for one
    * residency grace period, so it stays warm for a remount and leaves when that
-   * elapses. A held component needs no claim and is left to its policy, and a
-   * component the row does not carry is not claimed. Claims are shared: two
-   * callers on one value share one read and one residency entry.
+   * elapses. A value the replica folded itself needs no claim — nothing can
+   * take it away — and a component the row does not carry is not claimed.
+   * Claims are shared: two callers on one value share one read and one
+   * residency entry.
    *
    * A long-lived reader (a subscription) holds a claim for its lifetime; a
    * one-shot read takes one for the duration of the read instead (see
@@ -268,9 +247,9 @@ export interface Replica {
   relationships(query: RelationshipQuery): readonly string[];
   /**
    * Ids currently carrying `component` (`<type>/<field>`) in the composed
-   * view, ascending. Component existence is the set of present components on
-   * a row — held or known-but-not-resident — so a query reading it costs its
-   * index rather than a row filter.
+   * view, ascending. A component is present on a row iff the replica holds its
+   * value, so a query reading existence costs its index rather than a row
+   * filter.
    */
   components(component: string): readonly string[];
   /**

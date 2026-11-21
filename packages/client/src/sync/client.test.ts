@@ -312,11 +312,7 @@ describe("SyncClient schema option", () => {
   it("produces the same schema_hash for equivalent schemas that declare a document entity", async () => {
     const buildSchema = () => {
       const blogPost = defineModel("blog_post", { title: e.string() });
-      const textDocument = defineModel(
-        "text_document",
-        { content: e.log(TextCellSchema) },
-        { materialization: "on-demand" },
-      );
+      const textDocument = defineModel("text_document", { content: e.log(TextCellSchema) });
       return defineSchema({
         models: { blog_post: blogPost, text_document: textDocument },
         relationships: {

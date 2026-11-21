@@ -1106,11 +1106,7 @@ describe("SyncClient group listing", () => {
 
   it("resolves a seeded relationship row through the join, the index, and the document link", async () => {
     const blogPost = defineModel("blog_post", { title: e.string() });
-    const textDocument = defineModel(
-      "text_document",
-      { content: e.log(TextCellSchema) },
-      { materialization: "on-demand" },
-    );
+    const textDocument = defineModel("text_document", { content: e.log(TextCellSchema) });
     const schema = defineSchema({
       models: { blog_post: blogPost, text_document: textDocument },
       relationships: {

@@ -4,10 +4,12 @@
  * The benchmark's patch table drives a local source, so its `patches/change`
  * describes the cache's dispatcher, not the projection a real query runs. A
  * real unselected read expands `<model>/*` to every registered component, and
- * the patch declines a row it cannot prove holds one of them: a lazy component
+ * the patch declines a row it cannot prove is resident: a projected component
  * the row does not carry turns every projected write on that row into a re-run.
- * This measures that cliff on a page-like model at a size where a re-run is
- * expensive, and pins the number so a change in the rate is visible.
+ * Residency is per component and follows what the row carries (#943), so an
+ * optional component no row carries is the same cliff. This measures it on a
+ * page-like model at a size where a re-run is expensive, and pins the number so
+ * a change in the rate is visible.
  */
 
 import { describe, expect, it } from "vitest";
@@ -19,16 +21,14 @@ import { createClient } from "../client";
 import { callApplyAction, flushTasks, rowComponents, waitFor } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
 
-// A page keeps its small metadata held and its body on demand; `attachment` is
-// the optional on-demand component that not every page carries.
+// A page carries small metadata, a body, and an optional attachment that not
+// every page carries; a projected component a row has no value for is not
+// resident, and the patch declines that row.
 const page = defineModel("page", {
   title: e.string(),
   updated_at: e.string(),
-  body: defineComponent("page/body", e.string(), { loading: "lazy" }),
-  attachment: defineComponent("page/attachment", e.string(), {
-    loading: "lazy",
-    optional: true,
-  }),
+  body: defineComponent("page/body", e.string()),
+  attachment: defineComponent("page/attachment", e.string(), { optional: true }),
 });
 const schema = defineSchema({ models: { page }, version: 1 });
 type Client = ReturnType<typeof createClient<typeof schema>>;
@@ -131,23 +131,24 @@ const measureRate = async (carriesAttachment: (index: number) => boolean): Promi
 
 describe("shipped patch rate through client.<model>.query() (#942)", () => {
   it("patches every projected write when every projected component is resident", async () => {
-    // The documented benchmark shape: held metadata plus a lazy body on every
-    // row, so the priming run leaves every projected component resident.
+    // Every row carries every registered component, so the priming run leaves
+    // every projected component resident.
     const rate = await measureRate(() => true);
     // A fake source patching at 1.00 is only honest for this shape.
     expect(rate).toEqual({ patches: EDITS, runs: 0 });
   });
 
-  it("falls back to a re-run on a row missing an optional lazy projected component", async () => {
+  it("falls back to a re-run on a row that carries no optional projected component", async () => {
     // One page in ten carries the optional attachment; the patch declines on
-    // the other nine because an unselected read projects every component.
+    // the other nine because an unselected read projects a component those
+    // rows have no value for.
     const rate = await measureRate((index) => index % 10 === 0);
     expect(rate).toEqual({ patches: EDITS / 10, runs: EDITS - EDITS / 10 });
   });
 
-  it("re-runs every projected write when an optional lazy component is absent", async () => {
-    // A schema whose optional lazy component no row carries is the worst case:
-    // every row is one the patch cannot prove holds the component it projects.
+  it("re-runs every projected write when an optional projected component is absent", async () => {
+    // A schema whose optional component no row carries is the worst case:
+    // every row is one the patch cannot prove is resident for what it projects.
     const rate = await measureRate(() => false);
     expect(rate).toEqual({ patches: 0, runs: EDITS });
   });

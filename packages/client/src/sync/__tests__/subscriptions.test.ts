@@ -54,8 +54,6 @@ const documentRow = (id: string): Entity => ({
 const harness = (options: { residencyTtlMs?: number } = {}) => {
   const rows: Record<string, Entity> = { doc_1: documentRow("doc_1") };
   const replica = createReplica({
-    // `title` is held; `text` is materialized only while a claim holds it.
-    materialization: { holds: (component) => component !== LAZY },
     readComponent: async (id) => rows[id] ?? null,
     residencyTtlMs: options.residencyTtlMs,
   });
@@ -325,7 +323,7 @@ describe("subscription registry: entries", () => {
     expect(entry.refs).toBe(1);
     // The peer's claims survive: releasing one handle twice is not a release
     // of the other's.
-    expect(replica.stats().leases.leased).toBe(1);
+    expect(replica.stats().leases.leased).toBe(2);
     writeTitle(replica, "Renamed", 2);
     expect(seen).toEqual([replica.revision]);
 
@@ -340,7 +338,7 @@ describe("subscription registry: entries", () => {
     const row = subscriptions.open({ kind: "row", row: "doc_1" });
     await flushTasks();
     expect(replica.stats().leases).toMatchObject({
-      leased: 1,
+      leased: 2,
       inactive: 0,
       byComponent: { [LAZY]: { leased: 1 } },
     });
@@ -351,14 +349,14 @@ describe("subscription registry: entries", () => {
     expect(subscriptions.stats().live).toBe(0);
     expect(replica.stats().leases).toMatchObject({
       leased: 0,
-      inactive: 1,
-      timers: 1,
+      inactive: 2,
+      timers: 2,
       byComponent: { [LAZY]: { leased: 0, inactive: 1 } },
     });
-    // The value stays warm for one grace period, then leaves.
+    // The row is the log's own, so the released claim expires into nothing:
+    // the value was never the claim's to release.
+    await waitFor(() => replica.stats().leases.resident === 0);
     expect(replica.isComponentResident("doc_1", LAZY)).toBe(true);
-    await waitFor(() => !replica.isComponentResident("doc_1", LAZY));
-    expect(replica.stats().leases.resident).toBe(0);
   });
 
   it("shares one value and one lease between two subscriptions on one component", async () => {
@@ -373,7 +371,7 @@ describe("subscription registry: entries", () => {
     await flushTasks();
 
     // Two subscriptions, one residency entry for the shared value.
-    expect(replica.stats().leases.leased).toBe(1);
+    expect(replica.stats().leases.leased).toBe(2);
     expect(replica.stats().leases.byComponent[LAZY]).toMatchObject({ leased: 1, inactive: 0 });
 
     query.release();
@@ -721,7 +719,7 @@ describe("subscription registry: indexed dispatch (#938)", () => {
 describe("subscription registry at the client seam", () => {
   const note = defineModel("note", {
     title: e.string(),
-    body: defineComponent("note/body", e.string(), { loading: "lazy" }),
+    body: defineComponent("note/body", e.string()),
   });
   const todo = defineModel("todo", { title: e.string() });
   const schema = defineSchema({ models: { note, todo }, version: 1 });
@@ -814,7 +812,7 @@ describe("subscription registry at the client seam", () => {
     expect(client.subscriptions.stats().live).toBe(0);
   });
 
-  it("leases a row subscription's lazy component until it unsubscribes", async () => {
+  it("leases the components a row subscription's read selected until it unsubscribes", async () => {
     const client = mkClient({ residencyTtlMs: 0 });
     await callApplyAction(
       client,
@@ -824,21 +822,22 @@ describe("subscription registry at the client seam", () => {
 
     const row = await client.note.get("note_1");
     expect(row?.body).toBe("300 KB");
-    // The read claimed the body for its own duration and released it.
-    expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 1 });
+    // The row is fully resident, so the read installed nothing and claimed
+    // nothing: there was no value for a lease to keep.
+    expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 0 });
 
     const off = row!.subscribe(() => {});
     await flushTasks();
 
     // The live row subscription owns the body, so nothing can take it away.
     expect(client.replicaStats.leases).toMatchObject({
-      leased: 1,
+      leased: 2,
       inactive: 0,
       byComponent: { "note/body": { leased: 1, inactive: 0 } },
     });
 
     off();
-    expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 1 });
+    expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 2 });
   });
 
   it("uses one residency TTL for a query result and the claims it owns", async () => {

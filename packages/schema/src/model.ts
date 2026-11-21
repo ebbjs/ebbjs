@@ -53,20 +53,6 @@ export type FieldMarker = {
 export type { ConflictScope } from "@ebbjs/core";
 
 /**
- * Client-side residency of an model. `"held"` keeps every row in
- * the replica; `"on-demand"` materializes a row only while it is open.
- * Purely a read-path concern — the wire payload is identical either way.
- */
-export type Materialization = "held" | "on-demand";
-
-/**
- * How a component is loaded into the replica. `"eager"` keeps it held;
- * `"lazy"` loads it only once opened. Purely a read-path concern — the wire
- * payload is identical either way.
- */
-export type Loading = "eager" | "lazy";
-
-/**
  * Type-level stamp identifying a field schema that went through
  * `.default(value)`. A symbol brand is needed because every TypeBox
  * schema accepts a `default` annotation in its option bag, so a plain
@@ -459,8 +445,6 @@ export type ComponentShapeOf<T> = T extends TSchema
 export interface ComponentOptions {
   /** Whether an entity may exist without this component. Defaults to `false`. */
   readonly optional?: boolean;
-  /** Replica loading. Defaults to `"eager"`, which keeps the component held. */
-  readonly loading?: Loading;
   /** Conflict granularity. Defaults to the model's `conflictScope`. */
   readonly conflictScope?: ConflictScope;
   /** Whether this component participates in existence indexes. Defaults to `false`. */
@@ -485,7 +469,6 @@ export interface ComponentOptions {
 /** The option keys a component declaration accepts. */
 const COMPONENT_OPTION_KEYS: ReadonlySet<string> = new Set([
   "optional",
-  "loading",
   "conflictScope",
   "indexed",
   "structural",
@@ -502,7 +485,6 @@ export interface ComponentDef<TShape extends TSchema = TSchema, TName extends st
   readonly createShape: TSchema;
   readonly marker: FieldMarker;
   readonly optional: boolean;
-  readonly loading: Loading;
   /** Declared granularity; `undefined` inherits the model's default. */
   readonly conflictScope: ConflictScope | undefined;
   readonly indexed: boolean;
@@ -756,6 +738,22 @@ export class UnknownComponentOptionError extends Error {
   }
 }
 
+/** Raised when a model declares an option it does not know. */
+export class UnknownModelOptionError extends Error {
+  readonly modelName: string;
+  readonly option: string;
+
+  constructor(modelName: string, option: string) {
+    super(
+      `Model "${modelName}" declares unknown option "${option}". Accepted options are ` +
+        `${[...MODEL_OPTION_KEYS].join(", ")}.`,
+    );
+    this.name = "UnknownModelOptionError";
+    this.modelName = modelName;
+    this.option = option;
+  }
+}
+
 /** Build a frozen component declaration. Shared by `defineComponent` and anonymous fields. */
 export function buildComponentDef<TShape extends TSchema, TName extends string>(
   name: TName,
@@ -787,7 +785,6 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     createShape,
     marker: deriveMarker(shape),
     optional: options.optional ?? false,
-    loading: options.loading ?? "eager",
     conflictScope: options.conflictScope,
     indexed: options.indexed ?? false,
     structural: options.structural ?? false,
@@ -809,8 +806,8 @@ type DeclaredComponentShape<
 
 /**
  * Declare a component under `<model>/<leaf>`. The result is frozen and
- * carries the policy later slices read: existence, loading, conflict
- * scope, indexing, scope owner, and version.
+ * carries the policy later slices read: existence, conflict scope, indexing,
+ * scope owner, and version.
  *
  * Throws {@link OptionalDefaultConflictError} when `optional: true` is
  * combined with a declared `.default()`, {@link ComponentScopeError}
@@ -857,11 +854,6 @@ export interface ModelDef<TFields extends Record<string, TSchema>, TName extends
    */
   readonly conflictScope: ConflictScope;
   /**
-   * Default replica residency for this model's components. A component may
-   * declare its own. Defaults to `"held"`.
-   */
-  readonly materialization: Materialization;
-  /**
    * Read shape — drives value-shape typing and projection. Implicit
    * `Type.Object` wrapper over the field map. A non-defaulted field is
    * optional here.
@@ -884,9 +876,10 @@ export interface ModelDef<TFields extends Record<string, TSchema>, TName extends
 export interface ModelOptions {
   /** Default conflict granularity for the model's components. Defaults to `"field"`. */
   readonly conflictScope?: ConflictScope;
-  /** Default replica residency for the model's components. Defaults to `"held"`. */
-  readonly materialization?: Materialization;
 }
+
+/** The option keys a model declaration accepts. */
+const MODEL_OPTION_KEYS: ReadonlySet<string> = new Set(["conflictScope"]);
 
 /**
  * Define a model by name and component map. The result is frozen.
@@ -973,8 +966,10 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
   const readFields: Record<string, TSchema> = {};
   const createFields: Record<string, TSchema> = {};
   const components: Record<string, ComponentDef> = {};
+  for (const option of Object.keys(options)) {
+    if (!MODEL_OPTION_KEYS.has(option)) throw new UnknownModelOptionError(name, option);
+  }
   const modelScope = options.conflictScope ?? "field";
-  const modelMaterialization = options.materialization ?? "held";
   for (const [key, input] of Object.entries(inputs)) {
     // Optionality changes when a component may be absent, not what it may
     // hold: a null-admitting shape is refused whether or not it is optional.
@@ -989,7 +984,6 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
     const component = isComponentDef(input)
       ? input
       : buildComponentDef(`${name}/${key}`, input as TSchema, {
-          loading: modelMaterialization === "on-demand" ? "lazy" : "eager",
           conflictScope: modelScope,
         });
     readFields[key] = component.shape;
@@ -1003,7 +997,6 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
   return Object.freeze({
     name,
     conflictScope: modelScope,
-    materialization: modelMaterialization,
     shape: Type.Object(withReadOptional(readFields)) as EntityShape<ComponentFields<TInputs>>,
     createShape: Type.Object(createFields) as EntityCreateShape<ComponentFields<TInputs>>,
     components: Object.freeze(components) as ModelComponents<ComponentFields<TInputs>>,

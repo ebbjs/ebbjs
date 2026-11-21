@@ -29,7 +29,6 @@ import {
   type ComponentDef,
   type ConflictScope,
   type FieldMarker,
-  type Loading,
   type ModelDef,
 } from "./model";
 import type { RelationshipDef, SourceCardinality } from "./relationship";
@@ -167,11 +166,6 @@ export class ModelRegistry {
   /** Whether a declared component may be absent. Unknown components are not optional. */
   isOptional(model: string | ModelDef<Record<string, TSchema>>, name: string): boolean {
     return this.componentOf(model, name)?.optional ?? false;
-  }
-
-  /** Loading declared by a component. Unknown components default to eager. */
-  loadingOf(model: string | ModelDef<Record<string, TSchema>>, name: string): Loading {
-    return this.componentOf(model, name)?.loading ?? "eager";
   }
 
   /** Version declared by a field key or full `<model>/<leaf>` name; unknown is 1. */

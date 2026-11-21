@@ -156,12 +156,17 @@ describe("defineSchema registry", () => {
   });
 });
 
-describe("defineSchema materialization", () => {
+describe("defineSchema replica residency", () => {
   const page = defineModel("page", { title: e.string() });
 
-  it("leaves the platform model held", () => {
+  it("declares no residency policy on any registered model", () => {
     const schema = defineSchema({ models: { page }, version: 1 });
-    expect(schema._registry.get(EBB_MODEL_NAME)?.materialization).toBe("held");
+    for (const model of [schema._registry.get(EBB_MODEL_NAME), schema._registry.get("page")]) {
+      expect(model).not.toHaveProperty("materialization");
+      for (const component of Object.values(model?.components ?? {})) {
+        expect(component).not.toHaveProperty("loading");
+      }
+    }
   });
 });
 

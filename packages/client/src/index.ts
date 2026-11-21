@@ -369,7 +369,6 @@ export {
   type ModelOptions,
   type FieldMarker,
   type ConflictScope,
-  type Materialization,
   type MapSchema,
   type TSchema,
 } from "@ebbjs/schema";

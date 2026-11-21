@@ -92,7 +92,7 @@ _Avoid_: unload, broadcast absence, release
 
 **Component**:
 A named value attached to an entity, together with the policy that applies to
-it: existence, loading, conflict scope, indexing, version. Declared with
+it: existence, conflict scope, indexing, version. Declared with
 `defineComponent`; a bare field builder declares one anonymously.
 _Avoid_: field, attribute, property, column
 
@@ -115,7 +115,7 @@ component (`e.log`) is a keyed component that refuses rewrites: it also refuses
 _Avoid_: map, sparse, table
 
 **Anonymous component**:
-The component a bare field builder declares — one leaf, held, model-scoped
+The component a bare field builder declares — one leaf, model-scoped
 conflict, version 1. Every field declared before components existed is one.
 _Avoid_: plain field, implicit component
 
@@ -167,16 +167,16 @@ and keeps an HLC so a later write can still win. A tombstone is a value, not an
 absence.
 _Avoid_: null, deletion, empty
 
-**Loading**:
-The policy a component declares for materialization: _eager_ keeps it held;
-_lazy_ materializes it only once it is opened. Declared per component. Distinct
-from _Residency_, the state that policy produces.
-_Avoid_: materialization, cache policy, load strategy
-
 **Residency**:
-The state a component's _Loading_ policy produces: held, or on demand until
-opened. Distinct from the declaration. See _Held_ and _On demand_.
-_Avoid_: tier, cache policy, eviction policy
+Whether the replica holds a component's value right now. Never declared: a
+value is resident because an Action folded it or because it was read back from
+the entity store. The two have different lifetimes. A value a read installed is
+_Lease_-owned: it stays while a _Subscription_ claims it, and for one grace
+period after the last release, then leaves with the row. A value the log folded
+is the replica's own data: nothing reclaims it today, so it stays for the
+session even with no lease (#957). Distinct from durability, which is the entity
+store's.
+_Avoid_: loading, tier, cache policy, eviction policy
 
 **Conflict scope**:
 The granularity at which a concurrent write is surfaced as a conflict: _field_,
@@ -319,19 +319,30 @@ Action adds, a link it creates — is handed that prefix, so it neither waits on
 the commit it is deciding nor scopes by state that commit has yet to produce.
 _Avoid_: check, rule, hook
 
-### Materialization
+### Leases and subscriptions
 
-**Held**:
-A component the replica always materializes.
-_Avoid_: resident, pinned, tiered
+**Lease**:
+One counted claim on a component of one row, taken by a read and released when
+the read is done or, for a _Subscription_, when it ends. A leased value is never
+evicted or expired; the last release starts one grace period, after which a
+value the replica did not fold itself leaves again. Decides who keeps a value
+_Resident_, and nothing else: taking or releasing one never advances the
+revision.
+_Avoid_: pin, hold, lock, reference count
 
-**On demand**:
-A component the replica materializes only once it is opened.
-_Avoid_: windowed, cold
+**Subscription**:
+A live reader of a result or of a row — a mounted screen, a cached query —
+which owns the leases its read needs for as long as it is mounted. The last
+unsubscribe makes the result inactive but keeps it, and its claims, for the same
+grace period, so a remount inside it reads nothing. Decides when memory is
+reclaimed: subscriptions end, not a slot count.
+_Avoid_: listener, watcher, observer, pin
 
-**Open** / **Close**:
-Bring an on-demand component's value into the replica / release it from memory.
-_Avoid_: load, fetch, hydrate, evict, window
+**Store-backed**:
+A row the replica does not hold, so the entity store is its source: a read
+installs it and leases it. A row the replica does hold carries a value for every
+component it knows, so a projected row is never a silent partial.
+_Avoid_: on demand, lazy, cold, windowed
 
 ### Queries
 

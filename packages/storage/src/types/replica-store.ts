@@ -10,10 +10,9 @@ import type { Entity } from "@ebbjs/core";
  * persisted, because IndexedDB cannot index nested `FieldValue` paths,
  * express live-row filtering, or query a stored map.
  *
- * Residency is per component (#802): `entities` carry only the components the
- * policy holds, and `notResident` names the components a persisted row still
- * has without its value. A row whose every component is on demand is not
- * persisted at all.
+ * The record is a snapshot of the materialized view, not a durability claim:
+ * the entity store already has every synced row, so a record only makes a cold
+ * start cheaper.
  */
 export interface ReplicaRecord {
   /** Shape version of this record. A record of an unknown format reads as absent. */
@@ -22,13 +21,8 @@ export interface ReplicaRecord {
   readonly position: number;
   /** The replica's revision when the record was taken. */
   readonly revision: number;
-  /** Rows with their held components only. */
+  /** Rows as they stood in memory. */
   readonly entities: readonly Entity[];
-  /**
-   * Component names present on a persisted row whose value is not resident,
-   * keyed by entity id. Existence survives a restart without the value.
-   */
-  readonly notResident?: Readonly<Record<string, readonly string[]>>;
   /** The declared version each persisted component was materialized at (#804). */
   readonly componentVersions: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }

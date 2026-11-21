@@ -344,7 +344,7 @@ import type { Action as SeedAction } from "@ebbjs/core/seed";
 import type { StorageAdapter } from "@ebbjs/storage";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createIndexedDBAdapter } from "@ebbjs/storage/indexeddb";
-import { createReplica, holdAll } from "@ebbjs/storage/replica";
+import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica } from "@ebbjs/storage/types";
 import type { Replica as ReplicaEntry } from "@ebbjs/storage/replica";
 import { defineModel, defineSchema, e } from "@ebbjs/schema";
@@ -359,7 +359,6 @@ export const publicApi = {
   createMemoryAdapter,
   createIndexedDBAdapter,
   createReplica,
-  holdAll,
   defineModel,
   defineSchema,
   e,

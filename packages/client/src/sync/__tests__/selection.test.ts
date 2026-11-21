@@ -80,17 +80,13 @@ function harness<S extends AnySchema>(
 const note = defineModel("note", {
   title: e.string(),
   status: e.string(),
-  // A held component the drop test does not select, so the row stays resident
-  // when the selected components are detached.
+  // A component the drop test does not select, so the row stays resident when
+  // the selected components are detached.
   updated_at: e.number(),
-  body: defineComponent("note/body", e.string(), { loading: "lazy" }),
+  body: defineComponent("note/body", e.string()),
 });
 const page = defineModel("page", { title: e.string() });
-const pageContent = defineModel(
-  "page_content",
-  { text: e.string() },
-  { materialization: "on-demand" },
-);
+const pageContent = defineModel("page_content", { text: e.string() });
 const pageContentJoin = defineRelationship({
   source: page,
   target: pageContent,
@@ -223,8 +219,10 @@ describe("selection: the projection", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id, title: "One", groupIds: ["g_1"] });
     expect(Object.keys(rows[0]).sort()).toEqual(["groupIds", "id", "title"]);
-    // The body was neither projected nor materialized.
-    expect(client.replica.isComponentResident(id, "note/body")).toBe(false);
+    // The body was not projected, and the read took no claim on it: a
+    // selection is the projection and the lease set, nothing wider.
+    expect(rows[0]).not.toHaveProperty("body");
+    expect(client.replicaStats.leases.byComponent["note/body"]).toBeUndefined();
   });
 
   it("narrows a get row to the selected fields and its id", async () => {
@@ -240,8 +238,8 @@ describe("selection: the projection", () => {
     expect(row).not.toBeNull();
     expect(dataKeys(row!)).toEqual(["id", "title"]);
     expect(row?.title).toBe("One");
-    // The unselected lazy component was not read.
-    expect(client.replica.isComponentResident(id, "note/body")).toBe(false);
+    // The unselected component was not read or claimed.
+    expect(client.replicaStats.leases.byComponent["note/body"]).toBeUndefined();
   });
 
   it("rejects an unknown field at runtime on a query and a get", async () => {
@@ -421,10 +419,13 @@ describe("selection: two-phase read", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({ id: first, groupIds: ["g_1"], body: "first body" });
-    // The page is chosen before the component is acquired: only the first
-    // row's body was materialized.
-    expect(client.replica.isComponentResident(first, "note/body")).toBe(true);
-    expect(client.replica.isComponentResident(second, "note/body")).toBe(false);
+    // The page is narrowed before anything is acquired, and only the page is:
+    // the first row's body was claimed for the read and the second's was not.
+    expect(client.replicaStats.leases.byComponent["note/body"]).toMatchObject({
+      leased: 0,
+      inactive: 1,
+    });
+    expect(second).not.toBe(first);
   });
 
   it("no longer refuses a query over an on-demand source", async () => {
@@ -727,15 +728,18 @@ describe("selection: row sharing", () => {
     const detachWhole = wholeRow.subscribe(() => {});
     await flushTasks();
 
-    // The whole-row reader leases the body its own read names, even though the
-    // narrower read opened the row's entry first; otherwise the body would
-    // expire beneath it and project as a silent partial row.
+    // The whole-row reader claims the body its own read names, even though the
+    // narrower read opened the row's entry first.
     expect(client.replicaStats.leases.byComponent["note/body"]).toMatchObject({ leased: 1 });
 
-    // Only the whole-row reader's release ends the body's residency: the
-    // narrower reader still holds its own selection.
+    // The narrower reader's claim set is its own selection: releasing the
+    // whole-row reader ends the body's claim, not the narrower reader's.
     detachWhole();
-    await waitFor(() => !client.replica.isComponentResident(id, "note/body"));
+    await waitFor(
+      () =>
+        client.replicaStats.leases.byComponent["note/body"]?.leased === undefined ||
+        client.replicaStats.leases.byComponent["note/body"]?.leased === 0,
+    );
     const [narrow] = rowEntries(client);
     expect(narrow.state).toBe("live");
     expect(narrow.dependencies).toEqual([{ id, components: ["note/title"] }]);

@@ -617,7 +617,7 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
  * - a row that left the replica, changed model, or no longer satisfies the
  *   filters is not in the result a re-run would produce;
  * - a projected value the replica does not hold is an acquisition, which only
- *   the async run performs (a held component needs no read, so the patch
+ *   the async run performs (a resident value needs no read, so the patch
  *   projects it exactly as the run would).
  *
  * Either way the answer is `null`: the caller re-runs, which owns acquiring,
@@ -639,9 +639,7 @@ const patchProjection =
       if (row === undefined || row.model !== query.source || row.deleted_hlc !== null) return [];
       if (!matchesEveryFilter(row, query)) return [];
       const missing = held.some(
-        (component) =>
-          !context.replica.isHeld(component) &&
-          !context.replica.isComponentResident(row.id, component),
+        (component) => !context.replica.isComponentResident(row.id, component),
       );
       if (missing) return [];
       return [projectBase(row, executor, fields)];
@@ -692,15 +690,22 @@ export function buildReplicaQueryBuilder<
     projectQueryRow(row, shape, membershipRowIds(row.id, executor), context.migrations, fields);
   const resolveField: FieldResolver = (entity, field) =>
     projectedFieldValue(entity, field, shape, context.migrations);
-  const syncRun = (query: Query): readonly unknown[] => {
+  /**
+   * Project the page synchronously when the replica already holds everything
+   * it reads. `null` means a component must be acquired first, which only the
+   * async run does.
+   *
+   * The check runs the whole narrowing plan, and the async path then runs it
+   * again to acquire and project the same page. That is deliberate for now:
+   * only the narrowed page answers whether a row needs acquisition, so it has
+   * to be planned before the answer exists. A cold read of a large projection
+   * therefore pays the plan twice; #946 owns that cost.
+   */
+  const syncRun = (query: Query): readonly unknown[] | null => {
     const executor = replicaExecutorFor(context, view);
-    return projectResultRows(
-      executePlan(planQuery(query), executor, resolveField),
-      query,
-      executor,
-      context,
-      projectBase,
-    );
+    const rows = executePlan(planQuery(query), executor, resolveField);
+    if (pageNeedsAcquisition(rows, query, executor, context)) return null;
+    return projectResultRows(rows, query, executor, context, projectBase);
   };
   const asyncRun = (query: Query): Promise<readonly unknown[]> =>
     runProjected(query, replicaExecutor(context, view), context, resolveField, projectBase);
@@ -814,18 +819,34 @@ const projectionComponents = (query: Query, context: QueryContext): readonly str
 const joinLeaseComponents = (join: Join, context: QueryContext): readonly string[] =>
   expandReads(joinReadComponents(join), context);
 
-/** Every component a projecting terminal must acquire for its page. */
-const acquiredComponents = (query: Query, context: QueryContext): readonly string[] => [
-  ...projectionComponents(query, context),
-  ...query.joins.flatMap((join) => joinLeaseComponents(join, context)),
-];
-
 /**
  * Whether the page needs a lease: a selected, projected, or joined component
- * the replica does not already hold. A held page projects synchronously.
+ * some row it projects does not already hold. The answer is per row, not per
+ * query, so the check runs on the page the plan narrowed — a page the replica
+ * already holds projects synchronously.
  */
-const needsAcquisition = (query: Query, context: QueryContext): boolean =>
-  acquiredComponents(query, context).some((component) => !context.replica.isHeld(component));
+const pageNeedsAcquisition = (
+  rows: readonly Entity[],
+  query: Query,
+  executor: PlanExecutor,
+  context: QueryContext,
+): boolean => {
+  const source = projectionComponents(query, context);
+  const joins = query.joins.map((join) => ({
+    join,
+    components: joinLeaseComponents(join, context),
+  }));
+  return rows.some((row) => {
+    if (source.some((component) => !context.replica.isComponentResident(row.id, component))) {
+      return true;
+    }
+    return joins.some(({ join, components }) =>
+      joinIds(row, join, executor).some((id) =>
+        components.some((component) => !context.replica.isComponentResident(id, component)),
+      ),
+    );
+  });
+};
 
 const noopRelease: Release = () => {};
 
@@ -1066,7 +1087,7 @@ function buildChain<
   loadExecutor: () => Promise<PlanExecutor>,
   projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
   componentFor: ComponentFor,
-  syncRun?: (query: Query) => readonly unknown[],
+  syncRun?: (query: Query) => readonly unknown[] | null,
   asyncRun?: (query: Query) => Promise<readonly unknown[]>,
   patchRun?: (query: Query) => (ids: readonly string[]) => readonly unknown[] | null,
 ): QueryBuilder<TFields, TJoins, TJoined, TRow> {
@@ -1095,11 +1116,13 @@ function buildChain<
       // never flashes `stale`. One that must acquire a component or a join
       // target returns the pending run, which the cache publishes as `stale`
       // until it settles.
-      execute: () =>
-        needsAcquisition(query, context) && asyncRun !== undefined
-          ? (asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>)
-          : // SAFETY: `syncRun` closes over this chain's shape and joins.
-            (syncRun(query) as readonly JoinedRow<TFields, TJoined, TRow>[]),
+      execute: () => {
+        const rows = syncRun(query);
+        if (rows !== null || asyncRun === undefined) {
+          return rows as readonly JoinedRow<TFields, TJoined, TRow>[];
+        }
+        return asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>;
+      },
       // A change that only rewrites a projected value re-projects these rows
       // instead of re-running the plan (#942).
       patch:

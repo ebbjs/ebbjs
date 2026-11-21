@@ -11,6 +11,8 @@ import {
   validatePayload,
   NullFieldError,
   ReservedNameError,
+  UnknownComponentOptionError,
+  UnknownModelOptionError,
 } from "./index";
 
 describe("defineModel", () => {
@@ -49,14 +51,20 @@ describe("defineModel", () => {
     ).toBe("entity");
   });
 
-  it('defaults materialization to "held" and stores an explicit one', () => {
-    expect(defineModel("todo", { title: e.string() }).materialization).toBe("held");
-    const pageContent = defineModel(
-      "page_content",
-      { content: e.map(e.string()) },
-      { materialization: "on-demand" },
+  it("declares no replica residency: a model has no materialization and a component no loading", () => {
+    const note = defineModel("note", { title: e.string() });
+
+    expect(note).not.toHaveProperty("materialization");
+    expect(note.components.title).not.toHaveProperty("loading");
+  });
+
+  it("refuses the removed residency declarations instead of ignoring them", () => {
+    expect(() => defineComponent("note/body", e.string(), { loading: "lazy" } as never)).toThrow(
+      UnknownComponentOptionError,
     );
-    expect(pageContent.materialization).toBe("on-demand");
+    expect(() =>
+      defineModel("note", { title: e.string() }, { materialization: "on-demand" } as never),
+    ).toThrow(UnknownModelOptionError);
   });
 });
 
