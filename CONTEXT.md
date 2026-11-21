@@ -115,7 +115,7 @@ component (`e.log`) is a keyed component that refuses rewrites: it also refuses
 _Avoid_: map, sparse, table
 
 **Anonymous component**:
-The component a bare field builder declares — one leaf, held, model-scoped
+The component a bare field builder declares — one leaf, model-scoped
 conflict, version 1. Every field declared before components existed is one.
 _Avoid_: plain field, implicit component
 
@@ -170,8 +170,12 @@ _Avoid_: null, deletion, empty
 **Residency**:
 Whether the replica holds a component's value right now. Never declared: a
 value is resident because an Action folded it or because it was read back from
-the entity store, and it stays because of the _Lease_ a _Subscription_ holds on
-it. Distinct from durability, which is the entity store's.
+the entity store. The two have different lifetimes. A value a read installed is
+_Lease_-owned: it stays while a _Subscription_ claims it, and for one grace
+period after the last release, then leaves with the row. A value the log folded
+is the replica's own data: nothing reclaims it today, so it stays for the
+session even with no lease (#957). Distinct from durability, which is the entity
+store's.
 _Avoid_: loading, tier, cache policy, eviction policy
 
 **Conflict scope**:
