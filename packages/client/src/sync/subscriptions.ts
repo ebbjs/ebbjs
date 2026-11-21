@@ -9,32 +9,38 @@
  * share one resident value and one residency entry; releasing the last claim
  * starts the residency grace period and the value leaves when it elapses.
  *
- * The registry also owns the one dispatch loop: it subscribes to the replica
- * once, reads the journal once per batch, and dispatches the batch through the
- * live entries. A caught-up entry advances its cursor before its listeners run,
- * so a listener that throws cannot leave the entry behind for a later batch to
- * jump past; a throw is reported and never skips a peer. An entry whose result
- * will lag — an async run in flight — declares it by seeking back to the
- * revision its result reflects, and the dispatcher leaves that cursor alone
- * until the run settles, so a later journal gap and a `stale` status both stay
- * visible. The scan over entries here is what #938 replaces with dependency
- * indices; the entry shape — read set, row, cursor, dependencies — is what those
- * indices are built from.
+ * Dispatch is dependency-indexed (#938): the registry hands the change
+ * dispatcher what each entry reads — its components and models, or the row it
+ * watches plus the membership subject that files it — and the dispatcher hands
+ * back only the entries a batch touches. One dispatcher owns the one journal
+ * cursor, reads the journal once per batch, and advances to the batch revision
+ * before any listener runs, so a listener that throws cannot leave an entry
+ * behind for a later batch to jump past; the throw is reported and never skips
+ * a peer.
+ *
+ * An entry's cursor is the revision its consumer has processed. Dispatch moves
+ * it for a consumer that had caught up with the previous batch and only for
+ * such a one, so a consumer whose result will lag — an async run in flight —
+ * keeps the revision its result reflects through later batches, and a `stale`
+ * status stays visible until the run settles and seeks forward. An entry a
+ * batch does not touch is never visited: one that was caught up at its last
+ * dispatch reports the dispatcher's own cursor, so an idle result stays
+ * `current` without a write per entry, while one that declared lag keeps
+ * reporting the revision its consumer is behind.
  *
  * A consumer owns the meaning of its own result: a query entry publishes its
  * snapshot and depends on the rows it projected, a row entry is leased on the
  * components its row carries.
  */
 
-import {
-  carriesComponent,
-  carriesLink,
-  componentModel,
-  systemValueString,
-  type Entity,
-} from "@ebbjs/core";
+import { componentModel, EBB_COMPONENTS, systemValueString } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Release, Revision } from "@ebbjs/storage/replica";
 
+import {
+  createChangeDispatcher,
+  type ChangeBatch,
+  type SubscriptionDependencies,
+} from "./dependency-index";
 import { compileReadComponents, type CompiledReadComponents } from "./query-plan";
 
 /** Registry-local sequence number; stable for the life of one entry. */
@@ -95,10 +101,11 @@ export interface SubscriptionSnapshot<TResult = unknown> {
   /** The components this subscription reads: declared plus depended on. */
   readonly reads: ReadSet;
   /**
-   * The revision this entry's consumer has processed. The dispatcher advances
-   * it for a caught-up entry; a consumer whose result still reflects an older
-   * revision (an async run in flight) seeks back to it and holds it there until
-   * the run settles.
+   * The revision this entry's consumer has processed. Dispatch advances it for
+   * a caught-up entry before its listeners run; a consumer whose result still
+   * reflects an older revision (an async run in flight) seeks back to it and
+   * holds it there until the run settles. An entry no batch has touched since
+   * it was caught up reports the dispatcher's cursor instead of a stored one.
    */
   readonly cursor: Revision;
   /** The result the consumer last published; `undefined` before the first. */
@@ -163,17 +170,12 @@ export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean =
 };
 
 /**
- * The id an accessor change belongs to. A link is a key of its source row, so a
- * row carrying `ebb/link` is its own subject; a membership row names the member
- * entity it files. #938 serves this from the `row` and `index:membership`
- * indices instead of reading the row per change.
+ * The derived index a row subscription depends on: the member entity its
+ * membership row files. A link is a key of its source row, so a row carrying
+ * `ebb/link` is its own subject and the row index already answers for it; a
+ * membership row names a different row, which is what this index is for.
  */
-const accessorSubjectId = (entity: Entity): string | null => {
-  if (carriesLink(entity)) return entity.id;
-  if (!carriesComponent(entity, "membership")) return null;
-  const id = systemValueString(entity, "membership", "entity_id");
-  return id !== null && id.length > 0 ? id : null;
-};
+const MEMBERSHIP_INDEX = "membership";
 
 /** The values a row subscription claims: every component its row carries. */
 const rowDependencies = (replica: Replica, row: string): readonly Dependency[] => {
@@ -218,6 +220,16 @@ const compileReads = (
   return compileReadComponents([...components]);
 };
 
+/** What the dispatcher indexes for one entry: its reads, or the row it watches. */
+const indexDependencies = (entry: {
+  readonly kind: SubscriptionKind;
+  readonly row: string | null;
+  readonly reads: ReadSet;
+}): SubscriptionDependencies =>
+  entry.kind === "row" && entry.row !== null
+    ? { rows: [entry.row], indices: [{ index: MEMBERSHIP_INDEX, key: entry.row }] }
+    : { components: [...entry.reads.components], models: [...entry.reads.models] };
+
 /** Mutable entry state behind a read-only handle. */
 interface Entry<TResult> {
   readonly id: SubscriptionId;
@@ -229,7 +241,15 @@ interface Entry<TResult> {
   readonly declaredReads: readonly string[];
   readonly listeners: Set<ChangeListener>;
   reads: ReadSet;
+  /** The revision this entry's consumer has processed. */
   cursor: Revision;
+  /**
+   * The revision of the last batch dispatch handed this entry. Only a touched
+   * entry gets one, which is what tells an entry no batch has touched since it
+   * was caught up — its cursor may derive from the dispatcher — apart from one
+   * whose consumer declared lag.
+   */
+  dispatched: Revision;
   result: TResult | undefined;
   dependencies: readonly Dependency[];
   state: SubscriptionState;
@@ -262,7 +282,6 @@ const declaredReads = (spec: SubscriptionSpec): readonly string[] =>
 export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegistry => {
   const entries = new Map<string, Entry<unknown>>();
   let nextId = 0;
-  let dispatcherCursor: Revision = replica.revision;
   let closed = false;
 
   const endEntry = <TResult>(entry: Entry<TResult>): void => {
@@ -274,6 +293,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     entry.dependencies = [];
     entry.listeners.clear();
     entries.delete(entry.mapKey);
+    dispatcher.remove(entry as unknown as Entry<unknown>);
     for (const release of releases) release();
   };
 
@@ -317,7 +337,12 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     entry.dependencies = next;
     entry.reads = compileReads(entry.declaredReads, next);
     entry.generation += 1;
-    // SAFETY: an entry's state is independent of the result type it carries.
+    // A query entry is indexed by the components it reads, so a claim that
+    // added components re-indexes it in the same step. A row entry's record
+    // names only its row, so a new claim cannot move it.
+    if (entry.kind === "query") {
+      dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+    }
     void acquire(entry as unknown as Entry<unknown>, next, entry.generation);
   };
 
@@ -331,7 +356,12 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
       return entry.reads;
     },
     get cursor() {
-      return entry.cursor;
+      // Level with the last batch it was handed: the entry is untouched by
+      // anything since, so the dispatcher's cursor is the honest one. Behind
+      // it: the consumer declared the revision its result still reflects.
+      return entry.cursor >= entry.dispatched
+        ? Math.max(entry.cursor, dispatcher.cursor())
+        : entry.cursor;
     },
     get result() {
       return entry.result;
@@ -345,6 +375,66 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     get refs() {
       return entry.refs;
     },
+  });
+
+  /**
+   * Hand one touched entry its batch. The entry is level with the batch as soon
+   * as it is handed one, but its cursor moves only if the consumer had caught
+   * up with the previous one, and that happens before any listener runs: a
+   * listener that throws cannot leave a caught-up entry behind for a later
+   * batch to jump past, and a batch cannot report a lagging one caught up.
+   */
+  const notify = (entry: Entry<unknown>, batch: ChangeBatch): void => {
+    if (entry.state !== "live") return;
+    // Caught up when the batch began: the consumer has processed everything the
+    // entry was handed so far. A consumer that declared lag — its result still
+    // reflects an older revision, an async run in flight — is not, and keeps
+    // its cursor until the run settles and seeks forward.
+    const caughtUp = entry.cursor >= entry.dispatched;
+    entry.dispatched = batch.revision;
+    try {
+      if (entry.kind === "row" && entry.row !== null) {
+        // The row's resident components move with the change, and a row that
+        // left the replica has nothing left to hold.
+        depend(entry as unknown as Entry<unknown>, rowDependencies(replica, entry.row));
+      }
+    } catch (err) {
+      // Dispatch bookkeeping is as load-bearing as a listener here: one entry
+      // it cannot evaluate must not starve the rest. Its cursor stays behind,
+      // so a later gap dispatches this entry again.
+      // eslint-disable-next-line no-console
+      console.error("[Subscriptions] subscription match threw:", err);
+      return;
+    }
+    if (entry.state !== "live") return;
+    if (caughtUp) entry.cursor = batch.revision;
+    // A listener may detach a peer, so iterate a snapshot, and report a failure
+    // instead of letting one consumer skip the rest.
+    for (const listener of Array.from(entry.listeners)) {
+      try {
+        listener(batch.changes, batch.revision);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[Subscriptions] change listener threw:", err);
+      }
+    }
+  };
+
+  const membershipSubjects = (change: ReplicaChange): readonly string[] => {
+    // A membership row files a different row than the one it is, so the member
+    // is only reachable by reading the changed row — once per change, not once
+    // per subscription.
+    if (!change.components.includes(EBB_COMPONENTS.membership)) return [];
+    const changed = replica.get(change.id);
+    if (changed === undefined) return [];
+    const id = systemValueString(changed, MEMBERSHIP_INDEX, "entity_id");
+    return id !== null && id.length > 0 ? [id] : [];
+  };
+
+  const dispatcher = createChangeDispatcher<Entry<unknown>>({
+    journal: replica,
+    indices: { [MEMBERSHIP_INDEX]: membershipSubjects },
+    onChange: notify,
   });
 
   const handleOf = <TResult>(entry: Entry<TResult>): Subscription<TResult> => {
@@ -383,68 +473,6 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     return handle;
   };
 
-  /** Whether a batch touches an entry; the scan #938 replaces with indices. */
-  const touchedBy = (entry: Entry<unknown>, changes: readonly ReplicaChange[]): boolean => {
-    if (entry.kind === "query")
-      return changes.some((change) => touchesReadSet(entry.reads, change));
-    const row = entry.row;
-    if (row === null) return false;
-    return changes.some((change) => {
-      if (change.id === row) return true;
-      const changed = replica.get(change.id);
-      return changed !== undefined && accessorSubjectId(changed) === row;
-    });
-  };
-
-  const dispatch = (): void => {
-    const revision = replica.revision;
-    if (revision === dispatcherCursor) return;
-    const from = dispatcherCursor;
-    const changes = replica.changesSince(from);
-    // An empty batch on an advanced revision is a journal gap (a replica
-    // `load`): any subscription may have changed.
-    const gap = changes.length === 0;
-    dispatcherCursor = revision;
-    // Snapshot the entries: a listener may end its own entry or open another.
-    for (const entry of Array.from(entries.values())) {
-      if (entry.state !== "live") continue;
-      let touched: boolean;
-      try {
-        if (entry.kind === "row" && entry.row !== null) {
-          // The row's resident components move with the change, and a row that
-          // left the replica has nothing left to hold.
-          depend(entry, rowDependencies(replica, entry.row));
-        }
-        touched = gap || touchedBy(entry, changes);
-      } catch (err) {
-        // Dispatch bookkeeping is as load-bearing as a listener here: one
-        // entry it cannot evaluate must not starve the rest. Leaving its
-        // cursor behind makes a later gap dispatch it again.
-        // eslint-disable-next-line no-console
-        console.error("[Subscriptions] subscription match threw:", err);
-        continue;
-      }
-      // Advance a caught-up entry before its listeners run, so a listener
-      // that throws cannot leave the entry behind for a later batch to jump
-      // past. An entry whose consumer declared lag keeps its cursor until the
-      // run settles, so an untouched batch cannot report it caught up.
-      if (entry.cursor === from) entry.cursor = revision;
-      if (!touched) continue;
-      // A listener may detach a peer, so iterate a snapshot, and report a
-      // failure instead of letting one consumer skip the rest.
-      for (const listener of Array.from(entry.listeners)) {
-        try {
-          listener(changes, revision);
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error("[Subscriptions] change listener threw:", err);
-        }
-      }
-    }
-  };
-
-  const detach = replica.subscribe(() => dispatch());
-
   return {
     open<TResult>(spec: SubscriptionSpec): Subscription<TResult> {
       const mapKey = registryKey(spec);
@@ -455,7 +483,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         // it published under the same sharing key.
         return handleOf(existing as unknown as Entry<TResult>);
       }
-      const entry: Entry<TResult> = {
+      const entry: Entry<unknown> = {
         id: (nextId += 1),
         kind: spec.kind,
         key: sharingKey(spec),
@@ -465,6 +493,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         listeners: new Set(),
         reads: compileReadComponents(declaredReads(spec)),
         cursor: replica.revision,
+        dispatched: replica.revision,
         result: undefined,
         dependencies: [],
         state: "live",
@@ -473,14 +502,17 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         generation: 0,
         pending: 0,
       };
-      const handle = handleOf(entry);
+      // SAFETY: an entry's state is independent of the result type it carries,
+      // which the consumer that opened it restores on its own handle.
+      const handle = handleOf(entry) as unknown as Subscription<TResult>;
       // A registry closed before this subscription opened hands back an inert
       // handle: the caller's release path stays a no-op rather than leaking.
       if (closed) {
         entry.state = "terminal";
         return handle;
       }
-      entries.set(mapKey, entry as unknown as Entry<unknown>);
+      entries.set(mapKey, entry);
+      dispatcher.add(entry, indexDependencies(entry));
       if (entry.kind === "row" && entry.row !== null) {
         depend(entry, rowDependencies(replica, entry.row));
       }
@@ -503,8 +535,8 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     close: () => {
       if (closed) return;
       closed = true;
-      detach();
       for (const entry of Array.from(entries.values())) endEntry(entry);
+      dispatcher.close();
     },
   };
 };

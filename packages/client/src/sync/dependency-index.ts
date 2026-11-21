@@ -1,0 +1,283 @@
+/**
+ * Dependency-indexed change dispatch (#938).
+ *
+ * One dispatcher owns one journal cursor and a set of inverted indices: which
+ * subscriptions read a component, read a model whole, watch a row, or read a
+ * derived index (`index:<name>` — a membership subject, a group scope). A batch
+ * then costs the subscriptions it touches plus one lookup per dependency kind
+ * per change, instead of every subscription checked against every change.
+ *
+ * The dispatcher is the only place a batch is read: `changesSince` is called
+ * once, and the entries that survive the indices are the ones any work
+ * happens for. An entry a batch does not touch is never visited — a caught-up
+ * one's cursor derives from the dispatcher's own, so the batch costs it nothing.
+ *
+ * Gaps. A cursor below the retained window, or an empty batch on an advanced
+ * revision (a replica `load` replaces the journal), cannot be narrowed against:
+ * every subscription may have changed, so every one is handed the batch.
+ *
+ * The index is maintained as a map from entry to what it declared, so removing
+ * or reseating an entry costs its own dependencies rather than a scan.
+ */
+
+import { componentModel } from "@ebbjs/core";
+import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
+
+/** One derived-index read: `index:<name>`, keyed by `key`. */
+export interface IndexDependency {
+  /**
+   * The index name. `membership` keys a member entity id to the row
+   * subscriptions watching it, and `scope` keys `scope:<groupId>` to the
+   * subscriptions scoped to that group.
+   */
+  readonly index: string;
+  readonly key: string;
+}
+
+/**
+ * Everything one subscription declared it reads. A component write is matched
+ * by name, a whole-model read by the component's model prefix, a row watch by
+ * the changed id, and a derived-index read by whatever the change resolves to
+ * under that index.
+ */
+export interface SubscriptionDependencies {
+  /** Exact component names (`note/content`). */
+  readonly components?: readonly string[];
+  /** Models read whole (`note` stands for every `note/*` component). */
+  readonly models?: readonly string[];
+  /** Row ids watched directly. */
+  readonly rows?: readonly string[];
+  readonly indices?: readonly IndexDependency[];
+}
+
+/** What one dispatched batch cost. */
+export interface DispatchCounts {
+  /** Subscriptions the batch touched — the entries any work happens for. */
+  readonly touched: number;
+  /** Index lookups performed: one per dependency kind per change, plus keys. */
+  readonly lookups: number;
+  /** Change × subscription pairs a scan of every entry would have examined. */
+  readonly scanWork: number;
+}
+
+/** One batch, as handed to every subscription it touches. */
+export interface ChangeBatch {
+  readonly revision: Revision;
+  readonly changes: readonly ReplicaChange[];
+}
+
+/**
+ * The journal a dispatcher reads. The replica satisfies this: one cursor, the
+ * revision it is at, the oldest revision the retained window still answers,
+ * and a notification per mutating call.
+ */
+export interface ChangeJournal {
+  readonly revision: Revision;
+  readonly changeFloor: Revision;
+  changesSince(revision: Revision): readonly ReplicaChange[];
+  subscribe(listener: () => void): () => void;
+}
+
+/** The keys one change names under one derived index. */
+export type IndexResolver = (change: ReplicaChange) => readonly string[];
+
+export interface ChangeDispatcherOptions<T> {
+  readonly journal: ChangeJournal;
+  /**
+   * How a change resolves to derived-index keys, per index name. A resolver is
+   * asked on every change, so it answers cheaply and returns nothing for the
+   * changes it does not apply to.
+   */
+  readonly indices?: Readonly<Record<string, IndexResolver>>;
+  /** Hand one batch to one touched subscription. */
+  readonly onChange: (entry: T, batch: ChangeBatch) => void;
+}
+
+export interface ChangeDispatcher<T> {
+  /**
+   * Index `entry`, replacing whatever it declared before. Removing it again
+   * costs its own dependencies, never a scan of the table.
+   */
+  add(entry: T, dependencies: SubscriptionDependencies): void;
+  remove(entry: T): void;
+  /** How many subscriptions are indexed. */
+  size(): number;
+  /** The revision the dispatcher has been dispatched through. */
+  cursor(): Revision;
+  /** Counters from the last batch dispatched. */
+  stats(): DispatchCounts;
+  /** Stop dispatching and drop every entry. */
+  close(): void;
+}
+
+const addTo = <T>(map: Map<string, Set<T>>, key: string, entry: T): void => {
+  const bucket = map.get(key);
+  if (bucket === undefined) map.set(key, new Set([entry]));
+  else bucket.add(entry);
+};
+
+const removeFrom = <T>(map: Map<string, Set<T>>, key: string, entry: T): void => {
+  const bucket = map.get(key);
+  if (bucket === undefined) return;
+  bucket.delete(entry);
+  if (bucket.size === 0) map.delete(key);
+};
+
+/** An entry's place in registration order, so a batch fans out deterministically. */
+interface Indexed {
+  readonly seq: number;
+  readonly components: readonly string[];
+  readonly models: readonly string[];
+  readonly rows: readonly string[];
+  readonly indices: readonly IndexDependency[];
+}
+
+const collectInto = <T>(touched: Set<T>, bucket: ReadonlySet<T> | undefined): void => {
+  if (bucket === undefined) return;
+  for (const entry of bucket) touched.add(entry);
+};
+
+export const createChangeDispatcher = <T>(
+  options: ChangeDispatcherOptions<T>,
+): ChangeDispatcher<T> => {
+  const { journal, onChange } = options;
+  const resolvers = Object.entries(options.indices ?? {});
+  const entries = new Map<T, Indexed>();
+  const byComponent = new Map<string, Set<T>>();
+  const byModel = new Map<string, Set<T>>();
+  const byRow = new Map<string, Set<T>>();
+  /** `index:<name>` → key → entries. */
+  const byIndex = new Map<string, Map<string, Set<T>>>();
+  /** Readers of a whole model: a change that names no component may be theirs. */
+  const modelReaders = new Set<T>();
+  let nextSeq = 0;
+  let cursor: Revision = journal.revision;
+  let counts: DispatchCounts = { touched: 0, lookups: 0, scanWork: 0 };
+  let closed = false;
+
+  const drop = (entry: T): void => {
+    const indexed = entries.get(entry);
+    if (indexed === undefined) return;
+    entries.delete(entry);
+    for (const component of indexed.components) removeFrom(byComponent, component, entry);
+    for (const model of indexed.models) removeFrom(byModel, model, entry);
+    for (const row of indexed.rows) removeFrom(byRow, row, entry);
+    for (const { index, key } of indexed.indices) {
+      const bucket = byIndex.get(index);
+      if (bucket === undefined) continue;
+      removeFrom(bucket, key, entry);
+      if (bucket.size === 0) byIndex.delete(index);
+    }
+    if (indexed.models.length > 0) modelReaders.delete(entry);
+  };
+
+  /**
+   * The subscriptions a batch touches, and what finding them cost. One lookup
+   * per dependency kind per change: the row watch, the components and their
+   * models, or — for a change that names no component — the readers of every
+   * model.
+   */
+  const touchedBy = (changes: readonly ReplicaChange[]): { touched: Set<T>; lookups: number } => {
+    const touched = new Set<T>();
+    let lookups = 0;
+    for (const change of changes) {
+      lookups += 1;
+      collectInto(touched, byRow.get(change.id));
+      if (change.components.length === 0) {
+        lookups += 1;
+        for (const entry of modelReaders) touched.add(entry);
+      } else {
+        for (const component of change.components) {
+          lookups += 2;
+          collectInto(touched, byComponent.get(component));
+          collectInto(touched, byModel.get(componentModel(component)));
+        }
+      }
+      for (const [index, resolve] of resolvers) {
+        for (const key of resolve(change)) {
+          lookups += 1;
+          collectInto(touched, byIndex.get(index)?.get(key));
+        }
+      }
+    }
+    return { touched, lookups };
+  };
+
+  /** Registration order, so a listener cannot depend on an arbitrary bucket order. */
+  const inOrder = (touched: ReadonlySet<T>): readonly T[] =>
+    [...touched].sort((a, b) => (entries.get(a)?.seq ?? 0) - (entries.get(b)?.seq ?? 0));
+
+  const dispatch = (): void => {
+    if (closed) return;
+    const revision = journal.revision;
+    if (revision === cursor) return;
+    if (entries.size === 0) {
+      cursor = revision;
+      counts = { touched: 0, lookups: 0, scanWork: 0 };
+      return;
+    }
+    const changes = journal.changesSince(cursor);
+    // Nothing to narrow against: the cursor fell below the retained window, or
+    // the journal was replaced wholesale (a `load`) and a revision jump is all
+    // that is left of the batch.
+    const gap = cursor < journal.changeFloor || changes.length === 0;
+    cursor = revision;
+    let found: { touched: Set<T>; lookups: number };
+    try {
+      found = gap ? { touched: new Set(entries.keys()), lookups: 0 } : touchedBy(changes);
+    } catch (err) {
+      // A resolver reads the changed row, and a change it cannot read leaves the
+      // batch no more narrowable than a gap: one failure reports and hands every
+      // entry the batch rather than losing it for all of them.
+      // eslint-disable-next-line no-console
+      console.error("[Dispatch] index resolver threw:", err);
+      found = { touched: new Set(entries.keys()), lookups: 0 };
+    }
+    counts = {
+      touched: found.touched.size,
+      lookups: found.lookups,
+      scanWork: changes.length * entries.size,
+    };
+    if (found.touched.size === 0) return;
+    const batch: ChangeBatch = { revision, changes };
+    // A listener may add or end a peer, so the fan-out runs over a snapshot.
+    for (const entry of inOrder(found.touched)) onChange(entry, batch);
+  };
+
+  const detach = journal.subscribe(dispatch);
+
+  return {
+    add(entry, dependencies) {
+      if (closed) return;
+      const seq = entries.get(entry)?.seq ?? (nextSeq += 1);
+      drop(entry);
+      const indexed: Indexed = {
+        seq,
+        components: dependencies.components ?? [],
+        models: dependencies.models ?? [],
+        rows: dependencies.rows ?? [],
+        indices: dependencies.indices ?? [],
+      };
+      entries.set(entry, indexed);
+      for (const component of indexed.components) addTo(byComponent, component, entry);
+      for (const model of indexed.models) addTo(byModel, model, entry);
+      for (const row of indexed.rows) addTo(byRow, row, entry);
+      for (const { index, key } of indexed.indices) {
+        let bucket = byIndex.get(index);
+        if (bucket === undefined) byIndex.set(index, (bucket = new Map()));
+        addTo(bucket, key, entry);
+      }
+      if (indexed.models.length > 0) modelReaders.add(entry);
+    },
+    remove: drop,
+    size: () => entries.size,
+    cursor: () => cursor,
+    stats: () => counts,
+    close: () => {
+      if (closed) return;
+      closed = true;
+      detach();
+      for (const entry of entries.keys()) drop(entry);
+    },
+  };
+};

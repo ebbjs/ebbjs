@@ -1,0 +1,383 @@
+/**
+ * Unit tests for dependency-indexed dispatch (#938).
+ *
+ * A batch touches only the subscriptions whose declared dependencies intersect
+ * it — component, model, row, and derived-index reads — so the cost of a batch
+ * is the subscriptions it touches plus one index lookup per dependency kind per
+ * change, instead of every entry checked against every change.
+ */
+
+import { describe, expect, it, vi } from "vitest";
+import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
+
+import {
+  createChangeDispatcher,
+  type ChangeDispatcher,
+  type IndexResolver,
+  type SubscriptionDependencies,
+} from "../dependency-index";
+
+interface Sub {
+  readonly id: number;
+}
+
+const change = (id: string, components: readonly string[], revision: Revision): ReplicaChange => ({
+  revision,
+  id,
+  deleted: false,
+  components,
+});
+
+/**
+ * A journal a test drives by hand, shaped like the replica's: `publish` is one
+ * mutating call's notification, `reset` a `load`, and `trim` a window
+ * advancing past what a slow reader has read.
+ */
+const testJournal = () => {
+  let revision: Revision = 0;
+  let changeFloor: Revision = 0;
+  let journal: readonly ReplicaChange[] = [];
+  const listeners = new Set<() => void>();
+  let reads = 0;
+  return {
+    get revision() {
+      return revision;
+    },
+    get changeFloor() {
+      return changeFloor;
+    },
+    get reads() {
+      return reads;
+    },
+    changesSince(from: Revision): readonly ReplicaChange[] {
+      reads += 1;
+      if (from < changeFloor) return [];
+      return journal.filter((entry) => entry.revision > from);
+    },
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    /** Append a batch and notify, as one replica mutation would. */
+    publish(changes: readonly ReplicaChange[]): void {
+      journal = [...journal, ...changes];
+      const last = changes[changes.length - 1];
+      revision = last === undefined ? revision + 1 : last.revision;
+      for (const listener of listeners) listener();
+    },
+    /** Replace the journal wholesale, the way a `load` does. */
+    reset(next: Revision): void {
+      journal = [];
+      revision = next;
+      changeFloor = next;
+      for (const listener of listeners) listener();
+    },
+    /** Drop every entry at or below `floor`, as the window does on a bump. */
+    trim(floor: Revision): void {
+      changeFloor = floor;
+      journal = journal.filter((entry) => entry.revision > floor);
+      revision = Math.max(revision, floor);
+      for (const listener of listeners) listener();
+    },
+  };
+};
+
+type TestJournal = ReturnType<typeof testJournal>;
+
+/**
+ * The derived-index keys a change names, per index: what a resolver answers
+ * after reading the changed row.
+ */
+type KeysOf = (change: ReplicaChange) => Readonly<Record<string, readonly string[]>>;
+
+const resolverFor =
+  (keysOf: KeysOf, name: string): IndexResolver =>
+  (change) =>
+    keysOf(change)[name] ?? [];
+
+interface Fixture {
+  readonly entry: Sub;
+  readonly dependencies: SubscriptionDependencies;
+}
+
+/**
+ * The scan #938 replaces: every registered subscription checked against every
+ * change. The oracle for "the set the indices touch".
+ */
+const scanTouched = (
+  fixture: readonly Fixture[],
+  changes: readonly ReplicaChange[],
+  keysOf: (change: ReplicaChange) => Readonly<Record<string, readonly string[]>>,
+): Set<number> => {
+  const touched = new Set<number>();
+  for (const { entry, dependencies } of fixture) {
+    for (const next of changes) {
+      const modelRead = (dependencies.models ?? []).length > 0;
+      const named = next.components.some(
+        (component) =>
+          (dependencies.components ?? []).includes(component) ||
+          (dependencies.models ?? []).includes(component.slice(0, component.indexOf("/"))),
+      );
+      const rowRead = (dependencies.rows ?? []).includes(next.id);
+      const keys = keysOf(next);
+      const indexRead = (dependencies.indices ?? []).some(({ index, key }) =>
+        (keys[index] ?? []).includes(key),
+      );
+      if (named || rowRead || indexRead || (modelRead && next.components.length === 0)) {
+        touched.add(entry.id);
+        break;
+      }
+    }
+  }
+  return touched;
+};
+
+/** A dispatcher over `journal` that records who it was handed, in order. */
+const harness = (
+  journal: TestJournal,
+): {
+  readonly dispatcher: ChangeDispatcher<Sub>;
+  readonly notified: Set<number>;
+  readonly order: number[];
+} => {
+  const notified = new Set<number>();
+  const order: number[] = [];
+  const dispatcher = createChangeDispatcher<Sub>({
+    journal,
+    onChange: (entry) => {
+      notified.add(entry.id);
+      order.push(entry.id);
+    },
+  });
+  return { dispatcher, notified, order };
+};
+
+/** A deterministic pseudo-random generator so a fixture is reproducible. */
+const mulberry32 = (seed: number) => (): number => {
+  seed |= 0;
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+
+describe("dependency-indexed dispatch: correctness", () => {
+  it("touches exactly the subscriptions a scan touches", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const keysOf: KeysOf = (next) => ({
+      membership: next.components.includes("ebb/membership") ? [next.id] : [],
+      scope: next.id.startsWith("eg_") ? ["grp_1"] : [],
+    });
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: {
+        membership: resolverFor(keysOf, "membership"),
+        scope: resolverFor(keysOf, "scope"),
+      },
+      onChange: (entry) => notified.add(entry.id),
+    });
+
+    const fixture: readonly Fixture[] = [
+      { entry: { id: 1 }, dependencies: { components: ["note/title"] } },
+      { entry: { id: 2 }, dependencies: { models: ["note"] } },
+      {
+        entry: { id: 3 },
+        dependencies: {
+          components: ["note/content"],
+          rows: ["n_7"],
+          indices: [{ index: "membership", key: "n_7" }],
+        },
+      },
+      { entry: { id: 4 }, dependencies: { rows: ["n_1"] } },
+      { entry: { id: 5 }, dependencies: { components: ["ebb/link"] } },
+      { entry: { id: 6 }, dependencies: { indices: [{ index: "scope", key: "grp_1" }] } },
+    ];
+    for (const { entry, dependencies } of fixture) dispatcher.add(entry, dependencies);
+
+    const batches: readonly (readonly ReplicaChange[])[] = [
+      [change("n_1", ["note/title"], 1)],
+      [change("n_7", ["note/content"], 2)],
+      [change("n_9", ["ebb/grant"], 3)],
+      [change("n_1", [], 4)],
+      [change("eg_1", ["ebb/membership"], 5)],
+      [
+        change("n_2", ["note/title"], 6),
+        change("n_7", ["note/content"], 7),
+        change("n_1", [], 8),
+        change("eg_2", ["ebb/membership"], 9),
+      ],
+    ];
+
+    for (const batch of batches) {
+      notified.clear();
+      journal.publish(batch);
+      expect([...notified].sort((a, b) => a - b)).toEqual(
+        [...scanTouched(fixture, batch, keysOf)].sort((a, b) => a - b),
+      );
+    }
+  });
+
+  it("hands every entry the batch when a resolver throws", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: {
+        membership: () => {
+          throw new Error("resolve boom");
+        },
+      },
+      onChange: (entry) => notified.add(entry.id),
+    });
+    dispatcher.add({ id: 1 }, { components: ["note/title"] });
+    dispatcher.add({ id: 2 }, { components: ["note/content"] });
+
+    journal.publish([change("n_1", ["note/title"], 1)]);
+
+    // A change it cannot resolve leaves the batch no more narrowable than a
+    // gap: every entry is handed it rather than none.
+    expect([...notified].sort()).toEqual([1, 2]);
+    expect(dispatcher.stats()).toEqual({ touched: 2, lookups: 0, scanWork: 2 });
+    expect(reported).toHaveBeenCalled();
+    reported.mockRestore();
+  });
+
+  it("notifies in registration order", () => {
+    const journal = testJournal();
+    const { dispatcher, order } = harness(journal);
+    for (const id of [3, 1, 2]) dispatcher.add({ id }, { components: ["note/title"] });
+
+    journal.publish([change("n_1", ["note/title"], 1)]);
+
+    expect(order).toEqual([3, 1, 2]);
+  });
+
+  it("stops touching an entry once it is removed", () => {
+    const journal = testJournal();
+    const { dispatcher, notified } = harness(journal);
+    const kept: Sub = { id: 1 };
+    const gone: Sub = { id: 2 };
+    dispatcher.add(kept, { components: ["note/title"] });
+    dispatcher.add(gone, { components: ["note/title"] });
+    dispatcher.remove(gone);
+
+    journal.publish([change("n_1", ["note/title"], 1)]);
+
+    expect([...notified]).toEqual([1]);
+    expect(dispatcher.size()).toBe(1);
+  });
+
+  it("reindexes an entry that changes what it reads", () => {
+    const journal = testJournal();
+    const { dispatcher, notified } = harness(journal);
+    const entry: Sub = { id: 1 };
+    dispatcher.add(entry, { components: ["note/title"] });
+    dispatcher.add(entry, { components: ["note/content"] });
+
+    journal.publish([change("n_1", ["note/title"], 1)]);
+    expect([...notified]).toEqual([]);
+
+    journal.publish([change("n_1", ["note/content"], 2)]);
+    expect([...notified]).toEqual([1]);
+  });
+});
+
+describe("dependency-indexed dispatch: cost", () => {
+  it("touches 2,621 of 5,000 subscriptions with 280 lookups for 100 changes", () => {
+    const journal = testJournal();
+    const { dispatcher, notified } = harness(journal);
+    const random = mulberry32(42);
+    for (let i = 0; i < 5_000; i += 1) {
+      // Every entry draws a row id, the way the design record's fixture did;
+      // only the kinds that watch one index on it.
+      const row = `n_${Math.floor(random() * 2_000)}`;
+      const kind = i % 4;
+      const dependencies: SubscriptionDependencies =
+        kind === 0
+          ? { models: ["note"] }
+          : kind === 1
+            ? { components: ["note/title", "note/status"] }
+            : kind === 2
+              ? { components: ["note/content"], rows: [row] }
+              : { rows: [row] };
+      dispatcher.add({ id: i }, dependencies);
+    }
+
+    journal.publish(
+      Array.from({ length: 100 }, (_, i) =>
+        change(`n_${i}`, i % 5 === 0 ? [] : ["note/title"], i + 1),
+      ),
+    );
+
+    expect(dispatcher.stats()).toEqual({ touched: 2_621, lookups: 280, scanWork: 500_000 });
+    expect(notified.size).toBe(2_621);
+  });
+
+  it("touches 100 of 5,000 subscriptions with 3 lookups for one change", () => {
+    const journal = testJournal();
+    const { dispatcher, notified } = harness(journal);
+    for (let i = 0; i < 5_000; i += 1) {
+      dispatcher.add(
+        { id: i },
+        { components: [i % 2 === 0 ? `note/field_${i % 50}` : `other/field_${i % 50}`] },
+      );
+    }
+
+    journal.publish([change("n_1", ["note/field_0"], 1)]);
+
+    expect(dispatcher.stats()).toEqual({ touched: 100, lookups: 3, scanWork: 5_000 });
+    expect(notified.size).toBe(100);
+  });
+
+  it("reads the journal once for a batch, however many entries it touches", () => {
+    const journal = testJournal();
+    const { dispatcher } = harness(journal);
+    for (let i = 0; i < 500; i += 1) dispatcher.add({ id: i }, { models: ["note"] });
+
+    journal.publish(Array.from({ length: 20 }, (_, i) => change(`n_${i}`, ["note/title"], i + 1)));
+
+    expect(journal.reads).toBe(1);
+    expect(dispatcher.stats().touched).toBe(500);
+  });
+});
+
+describe("dependency-indexed dispatch: journal gaps", () => {
+  it("touches every subscription after a load replaces the journal", () => {
+    const journal = testJournal();
+    const { dispatcher, notified, order } = harness(journal);
+    dispatcher.add({ id: 1 }, { components: ["note/title"] });
+    dispatcher.add({ id: 2 }, { models: ["other"] });
+
+    journal.reset(5);
+
+    expect([...notified].sort((a, b) => a - b)).toEqual([1, 2]);
+    expect(order).toEqual([1, 2]);
+  });
+
+  it("touches every subscription whose cursor fell below the change floor", () => {
+    const journal = testJournal();
+    const { dispatcher, notified } = harness(journal);
+    dispatcher.add({ id: 1 }, { components: ["note/title"] });
+
+    journal.publish([change("n_1", ["other/title"], 1)]);
+    expect([...notified]).toEqual([]);
+
+    // The retained window moves past what the entry has been dispatched
+    // through, so a batch can no longer be narrowed for it.
+    journal.trim(2);
+
+    expect([...notified]).toEqual([1]);
+  });
+
+  it("does no index work when nothing is registered", () => {
+    const journal = testJournal();
+    const { dispatcher } = harness(journal);
+    journal.publish([change("n_1", ["note/title"], 1)]);
+    expect(journal.reads).toBe(0);
+    expect(dispatcher.stats()).toEqual({ touched: 0, lookups: 0, scanWork: 0 });
+  });
+});
