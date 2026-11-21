@@ -119,10 +119,9 @@ export const buildComponentIndexFrom = (
 
 /**
  * Components a reader can observe changing between two versions of a row.
- * Presence is the union of held values and known-but-not-resident components
- * (#802), so a component can change existence without either side carrying a
- * value. A value counts as changed by reference, matching the merge rule; a
- * component dormant on both sides has no value on either, so it is untouched.
+ * Presence is the set of components each version carries, so a component can
+ * change existence without either side carrying a value. A value counts as
+ * changed by reference, matching the merge rule.
  */
 export const touchedComponentSet = (
   previous: Entity | null | undefined,

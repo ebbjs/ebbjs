@@ -32,7 +32,7 @@ const post = defineModel(
 const body = defineModel(
   "text_document",
   { content: e.log(TextCellSchema) },
-  { conflictScope: "entity", materialization: "on-demand" },
+  { conflictScope: "entity" },
 );
 const schema = defineSchema({
   models: { blog_post: post, text_document: body },

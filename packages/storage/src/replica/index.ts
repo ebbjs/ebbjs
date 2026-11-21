@@ -12,10 +12,9 @@ export type {
   LeaseTimers,
   Release,
 } from "./leases";
-export { DEFAULT_JOURNAL_CAPACITY, createReplica, holdAll } from "./replica";
+export { DEFAULT_JOURNAL_CAPACITY, createReplica } from "./replica";
 export type {
   ContentChange,
-  MaterializationPolicy,
   MembershipChange,
   MembershipQuery,
   MembershipTransition,

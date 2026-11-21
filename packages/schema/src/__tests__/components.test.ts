@@ -24,7 +24,6 @@ describe("defineComponent", () => {
         kind: "component",
         name: "note/title",
         optional: false,
-        loading: "eager",
         conflictScope: undefined,
         indexed: false,
         structural: false,
@@ -41,7 +40,6 @@ describe("defineComponent", () => {
       { engine: e.string(), updates: e.map(e.string()) },
       {
         optional: true,
-        loading: "lazy",
         conflictScope: "component",
         indexed: true,
         structural: true,
@@ -50,7 +48,7 @@ describe("defineComponent", () => {
     );
 
     expect(body.optional).toBe(true);
-    expect(body.loading).toBe("lazy");
+    expect(body).not.toHaveProperty("loading");
     expect(body.conflictScope).toBe("component");
     expect(body.indexed).toBe(true);
     expect(body.structural).toBe(true);
@@ -85,7 +83,6 @@ describe("defineModel", () => {
         kind: "component",
         name: "note/title",
         optional: false,
-        loading: "eager",
         conflictScope: "field",
       }),
     );
@@ -106,16 +103,19 @@ describe("defineModel", () => {
     expect(registry.conflictScopeOf("note", "body")).toBe("entity");
   });
 
-  it("maps the model's materialization default onto component loading", () => {
-    const page = defineModel(
-      "page",
-      { content: e.map(e.string()) },
-      { materialization: "on-demand" },
-    );
+  it("declares no replica residency for a model or its components", () => {
+    const page = defineModel("page", { content: e.map(e.string()) }, { conflictScope: "entity" });
     const note = defineModel("note", { title: e.string() });
 
-    expect(page.components.content.loading).toBe("lazy");
-    expect(note.components.title.loading).toBe("eager");
+    expect(page).not.toHaveProperty("materialization");
+    expect(page.components.content).not.toHaveProperty("loading");
+    expect(note.components.title).not.toHaveProperty("loading");
+  });
+
+  it("refuses a removed loading declaration, naming the accepted options", () => {
+    expect(() => defineComponent("note/body", e.string(), { loading: "lazy" } as never)).toThrow(
+      UnknownComponentOptionError,
+    );
   });
 
   it("derives the model shape from its components", () => {
@@ -184,7 +184,7 @@ describe("ModelRegistry", () => {
   const body = defineComponent(
     "note/body",
     { text: e.string() },
-    { optional: true, loading: "lazy", conflictScope: "component" },
+    { optional: true, conflictScope: "component" },
   );
   const note = defineModel("note", { title: e.string().default("untitled"), body });
 
@@ -208,10 +208,10 @@ describe("ModelRegistry", () => {
     expect(registry().componentOf("note", "missing")).toBeUndefined();
   });
 
-  it("reports existence, loading, and conflict scope", () => {
+  it("reports existence and conflict scope", () => {
     expect(registry().isOptional("note", "title")).toBe(false);
     expect(registry().isOptional("note", "note/body")).toBe(true);
-    expect(registry().loadingOf("note", "body")).toBe("lazy");
+    expect(registry()).not.toHaveProperty("loadingOf");
     expect(registry().conflictScopeOf("note", "body")).toBe("component");
     expect(registry().conflictScopeOf("note", "title")).toBe("field");
   });

@@ -39,20 +39,12 @@ const isComponentVersionsShape = (
   );
 };
 
-const isNotResidentShape = (value: unknown): value is Record<string, readonly string[]> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  return Object.values(value).every(
-    (components) =>
-      Array.isArray(components) && components.every((component) => typeof component === "string"),
-  );
-};
-
 /**
  * A record is readable only when it names a format this build understands
  * and is structurally whole. Anything else — a bad format, a negative or
- * fractional watermark, a non-array entity set, a malformed row, a malformed
- * not-resident map, or a malformed component-version map — reads as absent, so
- * load falls back to full replay.
+ * fractional watermark, a non-array entity set, a malformed row, or a
+ * malformed component-version map — reads as absent, so load falls back to
+ * full replay.
  */
 export const isValidReplicaRecord = (value: unknown): value is ReplicaRecord => {
   if (typeof value !== "object" || value === null) return false;
@@ -61,7 +53,6 @@ export const isValidReplicaRecord = (value: unknown): value is ReplicaRecord => 
   if (!isNonNegativeInteger(record.position)) return false;
   if (!isNonNegativeInteger(record.revision)) return false;
   if (!Array.isArray(record.entities)) return false;
-  if (record.notResident !== undefined && !isNotResidentShape(record.notResident)) return false;
   if (!isComponentVersionsShape(record.componentVersions)) return false;
   return record.entities.every(isRowShape);
 };

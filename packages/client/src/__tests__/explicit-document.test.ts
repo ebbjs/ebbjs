@@ -41,11 +41,7 @@ import {
 } from "../sync/test-utils";
 
 const note = defineModel("note", { title: e.string() });
-const textDocument = defineModel(
-  "text_document",
-  { content: e.log(TextCellSchema) },
-  { materialization: "on-demand" },
-);
+const textDocument = defineModel("text_document", { content: e.log(TextCellSchema) });
 const noteBody = defineRelationship({
   source: note,
   target: textDocument,

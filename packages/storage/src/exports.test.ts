@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
  *
  *   @ebbjs/storage/memory     — createMemoryAdapter
  *   @ebbjs/storage/indexeddb  — createIndexedDBAdapter, IndexedDBAdapterOptions
- *   @ebbjs/storage/replica    — createReplica, createLeaseTable, contentChanged, holdAll
+ *   @ebbjs/storage/replica    — createReplica, createLeaseTable, contentChanged
  *   @ebbjs/storage/types      — ActionLog, DirtyTracker, EntityStore, CursorStore, StorageAdapter, OutboxStore
  */
 
@@ -30,7 +30,6 @@ describe("@ebbjs/storage subpaths", () => {
     expect(typeof mod.createReplica).toBe("function");
     expect(typeof mod.createLeaseTable).toBe("function");
     expect(typeof mod.contentChanged).toBe("function");
-    expect(typeof mod.holdAll.holds).toBe("function");
     expect(Object.keys(mod).sort()).toEqual([
       "DEFAULT_JOURNAL_CAPACITY",
       "DEFAULT_RESIDENCY_TTL_MS",
@@ -40,7 +39,6 @@ describe("@ebbjs/storage subpaths", () => {
       "createLeaseTable",
       "createReplica",
       "foldEntityAction",
-      "holdAll",
       "residencyTtlOf",
       "unrefTimer",
     ]);

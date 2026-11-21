@@ -3,9 +3,9 @@
  *
  * Measures the shipped materialized replica (`@ebbjs/storage/replica`) against
  * the workspace shape from the epic #495 spike, so #503's numbers are
- * comparable with it: held metadata footprint, traversal cost (wall-clock and
- * rows touched), search over held pages, the one-pass projection build, and
- * the on-demand body path.
+ * comparable with it: resident metadata footprint, traversal cost (wall-clock and
+ * rows touched), search over resident pages, the one-pass projection build, and
+ * the store-backed body path.
  *
  * The replica is seeded directly: one `ReplicaRecord` is built in memory and
  * handed to `replica.load(record)`. Seeding through the memory adapter's
@@ -42,8 +42,6 @@ import {
   createCountingStore,
   createIndexCounter,
   entityDegree,
-  heldMetadata,
-  holdsRow,
   maxOf,
   median,
   minOf,
@@ -55,9 +53,9 @@ import {
 } from "./harness";
 import {
   configFromEnv,
-  createHeldRows,
+  createResidentRows,
   createWorkspace,
-  ON_DEMAND_TYPE,
+  BODY_TYPE,
   pageId,
   spreadIndices,
   stringField,
@@ -125,20 +123,20 @@ const workspace = createWorkspace(config);
 const generateMs = performance.now() - generateStart;
 log(`workspace generated in ${ms(generateMs)}`);
 
-const heldRows = workspace.record.entities.filter(holdsRow);
+const residentRows = workspace.record.entities;
 const store = createCountingStore(workspace.rows);
 
 // ---------------------------------------------------------------------------
-// 1a. Footprint — JSON bytes of the held rows (independent of V8)
+// 1a. Footprint — JSON bytes of the resident rows (independent of V8)
 // ---------------------------------------------------------------------------
 
 const rowsOfModel = (type: string): readonly Entity[] =>
-  heldRows.filter((entity) => entity.model === type);
+  residentRows.filter((entity) => entity.model === type);
 
 const pageJson = jsonBytes(rowsOfModel("page"));
 // Every platform row is an `ebb` row, so the component is what splits them out.
 // A link is not one of them: it is a key of its source page.
-const platformRows = heldRows.filter((entity) => entity.model === EBB_MODEL_NAME);
+const platformRows = residentRows.filter((entity) => entity.model === EBB_MODEL_NAME);
 const groupJson = jsonBytes(
   platformRows.filter(
     (entity) => carriesComponent(entity, "membership") || carriesComponent(entity, "group"),
@@ -147,9 +145,6 @@ const groupJson = jsonBytes(
 const metadataJson = pageJson + groupJson;
 const bodyJson = workspace.bodyBytes * config.n;
 const workspaceJson = metadataJson + bodyJson;
-const recordBodyJson = jsonBytes(
-  workspace.record.entities.filter((entity) => entity.model === ON_DEMAND_TYPE),
-);
 
 // ---------------------------------------------------------------------------
 // 1b. Footprint — heap bytes the replica actually retains
@@ -165,7 +160,7 @@ const heapAfterGc = (force: () => void): number => {
 };
 
 /**
- * Paired heap accounts, every rep inside one measurement window: the held rows
+ * Paired heap accounts, every rep inside one measurement window: the resident rows
  * are allocated fresh so the account owns their objects, one `Map<id, row>` is
  * built over exactly those rows as the reference cost of a base map, and then
  * a replica is `load`ed over the same rows so its own structures land on top.
@@ -188,9 +183,9 @@ const measureHeap = (
   seed: Workspace["record"],
   options: typeof loadOptions,
 ): HeapAccounts => {
-  // The record's on-demand rows ride along with every rep so `load` is still
-  // seen dropping a held type, exactly as on the workspace record.
-  const bodyRows = seed.entities.filter((entity) => !holdsRow(entity));
+  // The record's store-backed rows ride along with every rep, exactly as on
+  // the workspace record, so `load` adopts the same set either way.
+  const bodyRows = seed.entities.filter((entity) => entity.model === BODY_TYPE);
   const recordFor = (rows: readonly Entity[]): Workspace["record"] => ({
     ...seed,
     entities: [...rows, ...bodyRows],
@@ -210,7 +205,7 @@ const measureHeap = (
 
   // One untimed rep: the first build pays the JIT and inline-cache warm-up and
   // would otherwise read as a systematically larger account.
-  const warmRows = createHeldRows(config);
+  const warmRows = createResidentRows(config);
   const warmRecord = recordFor(warmRows);
   const warmBaseMap = mapOf(warmRows);
   const warmReplica = createReplica(options);
@@ -219,7 +214,7 @@ const measureHeap = (
 
   for (let rep = 0; rep < HEAP_REPS; rep += 1) {
     const base = heapAfterGc(force);
-    const rows = createHeldRows(config);
+    const rows = createResidentRows(config);
     const record = recordFor(rows);
     pinned.push(rows, record);
     const withRows = heapAfterGc(force);
@@ -239,7 +234,7 @@ const measureHeap = (
       baseMap.size !== rows.length ||
       probe.stats().entities !== rows.length
     ) {
-      throw new Error("heap account: built object is not the held row set");
+      throw new Error("heap account: built object is not the resident row set");
     }
     const rowsBytes = withRows - base;
     const baseMapBytes = withBaseMap - withRows;
@@ -257,7 +252,7 @@ const measureHeap = (
     warmBaseMap.size !== warmRows.length ||
     warmReplica.stats().entities !== warmRows.length
   ) {
-    throw new Error("heap account: warm-up is not the held row set");
+    throw new Error("heap account: warm-up is not the resident row set");
   }
   return {
     rows: rowsAccount,
@@ -269,7 +264,6 @@ const measureHeap = (
 };
 
 const loadOptions = {
-  materialization: heldMetadata,
   readComponent: store.read,
   // Disabled so a read stays warm for the whole sweep: every document below is
   // read once, and a second read must not go back to the store.
@@ -318,7 +312,7 @@ const loadSamples = Array.from({ length: LOAD_REPS }, () => {
 });
 const loadMedian = median(loadSamples);
 const stats: ReplicaStats = replica.stats();
-const indexShape = summariseIndexKeys(heldRows);
+const indexShape = summariseIndexKeys(residentRows);
 
 // ---------------------------------------------------------------------------
 // Self-checks: fail loudly rather than measure a fixture that is not the
@@ -359,16 +353,13 @@ const groupsOfFirst = await membershipGroups(
 if (groupsOfFirst.length !== 1 || groupsOfFirst[0]?.id !== WORKSPACE_GROUP_ID) {
   throw new Error("self-check: page_1 is not filed in exactly the workspace group");
 }
-if (stats.held !== workspace.counts.heldRows) {
+if (stats.entities !== workspace.counts.residentRows) {
   throw new Error(
-    `self-check: replica holds ${stats.held} rows, fixture generates ${workspace.counts.heldRows}`,
+    `self-check: replica holds ${stats.entities} rows, fixture generates ${workspace.counts.residentRows}`,
   );
 }
-if (
-  stats.heldByModel[ON_DEMAND_TYPE] !== undefined ||
-  replica.get(workspace.bodyIds[0]) !== undefined
-) {
-  throw new Error("self-check: an on-demand body is resident after load");
+if (stats.byModel[BODY_TYPE] !== undefined || replica.get(workspace.bodyIds[0]) !== undefined) {
+  throw new Error("self-check: a store-backed body is resident after load");
 }
 counters.reset();
 await forwardOne(reader, adjacency, pageId(1), "page", "parent", "page");
@@ -503,7 +494,7 @@ const directSamples = await measureReads(directCases);
 const storageSamples = await measureReads(storageCases);
 
 // ---------------------------------------------------------------------------
-// 3. Search over held pages
+// 3. Search over resident pages
 // ---------------------------------------------------------------------------
 
 const needle = "Document 4";
@@ -538,7 +529,7 @@ const searchCases: readonly ReadCase[] = [
   },
 ];
 
-log("timing search over held pages");
+log("timing search over resident pages");
 const searchSamples: LatencySample[] = [];
 for (const searchCase of searchCases) {
   searchSamples.push(
@@ -558,8 +549,8 @@ for (const searchCase of searchCases) {
 
 const bodySample = workspace.bodyIds.slice(0, Math.min(100, workspace.bodyIds.length));
 const primaryBody = bodySample[0];
-if (primaryBody === undefined) throw new Error("fixture produced no on-demand bodies");
-const bodyComponents = [`${ON_DEMAND_TYPE}/content`];
+if (primaryBody === undefined) throw new Error("fixture produced no store-backed bodies");
+const bodyComponents = [`${BODY_TYPE}/content`];
 
 // Warm the read path so the first timed read is not JIT + first-read.
 for (const id of bodySample.slice(0, 3)) await replica.read(id, bodyComponents);
@@ -572,7 +563,7 @@ for (const id of bodySample) {
   const loaded = await replica.read(id, bodyComponents);
   readSamples.push(performance.now() - start);
   coldReads = Math.max(coldReads, store.snapshot().calls);
-  if (loaded === null) throw new Error(`on-demand body self-check: ${id} did not read`);
+  if (loaded === null) throw new Error(`store-backed body self-check: ${id} did not read`);
 }
 const readMedian = median(readSamples);
 
@@ -581,21 +572,21 @@ const readMedian = median(readSamples);
 store.reset();
 await replica.read(primaryBody, bodyComponents);
 const warmReads = store.snapshot().calls;
-const bodiesResident = replica.stats().byModel[ON_DEMAND_TYPE] ?? 0;
+const bodiesResident = replica.stats().byModel[BODY_TYPE] ?? 0;
 const bodyLeases = replica.stats().leases;
 if (coldReads !== 1) {
-  throw new Error(`on-demand body self-check: cold read touched ${coldReads} store rows`);
+  throw new Error(`store-backed body self-check: cold read touched ${coldReads} store rows`);
 }
 if (warmReads !== 0) {
-  throw new Error(`on-demand body self-check: a warm read touched ${warmReads} store rows`);
+  throw new Error(`store-backed body self-check: a warm read touched ${warmReads} store rows`);
 }
 if (bodiesResident < bodySample.length) {
   throw new Error(
-    `on-demand body self-check: ${bodiesResident} of ${bodySample.length} bodies stayed resident`,
+    `store-backed body self-check: ${bodiesResident} of ${bodySample.length} bodies stayed resident`,
   );
 }
 if (bodyLeases.leased !== 0) {
-  throw new Error(`on-demand body self-check: ${bodyLeases.leased} leases outlived their read`);
+  throw new Error(`store-backed body self-check: ${bodyLeases.leased} leases outlived their read`);
 }
 
 // ---------------------------------------------------------------------------
@@ -985,16 +976,16 @@ push(
 const footprintRows: readonly (readonly [string, number, number])[] = [
   ["`page` (title, icon, updated_at, `ebb/link` edge keys)", workspace.counts.pages, pageJson],
   ["`membership` + `group`", workspace.counts.memberships + workspace.counts.groups, groupJson],
-  ["**held metadata subtotal**", workspace.counts.heldRows, metadataJson],
+  ["**resident metadata subtotal**", workspace.counts.residentRows, metadataJson],
   [
-    `\`${ON_DEMAND_TYPE}\` bodies (representative row × ${grouped(config.n)}, on demand)`,
+    `\`${BODY_TYPE}\` bodies (representative row × ${grouped(config.n)}, store-backed)`,
     config.n,
     bodyJson,
   ],
-  ["**full workspace (hypothetical)**", workspace.counts.heldRows + config.n, workspaceJson],
+  ["**full workspace (hypothetical)**", workspace.counts.residentRows + config.n, workspaceJson],
 ];
 
-push("## 1. Held metadata footprint", "", "### JSON bytes (uncompressed)", "");
+push("## 1. Resident metadata footprint", "", "### JSON bytes (uncompressed)", "");
 push(
   "| bucket | rows | JSON bytes | size | % of workspace |",
   "| --- | ---: | ---: | ---: | ---: |",
@@ -1009,9 +1000,8 @@ push(
   `One representative body row is ${kb(workspace.bodyBytes)}; the store materializes ${grouped(
     workspace.counts.bodyRows,
   )} of them, not all ${grouped(config.n)}.`,
-  `The record also carries ${grouped(workspace.counts.recordBodyRows)} \`${ON_DEMAND_TYPE}\` rows (${kb(
-    recordBodyJson,
-  )}) to prove \`load\` drops a non-held type.`,
+  `The record carries the metadata rows only: a \`${BODY_TYPE}\` row is the store's, and`,
+  "`replica.read` installs it under a lease.",
   "The totals run ~14% above the #495 spike's 15.1 MB for the same 50,000 rows because every",
   "field here carries a per-field `update_id` of realistic length (`u_page_1234_title`, ~20–22",
   "chars, close to a 21-char nanoid) where the spike used short `u_${n}` placeholders, so the",
@@ -1019,14 +1009,12 @@ push(
   "",
 );
 
-// Per-component attribution of the held bytes (#802): the replica now keeps a
-// row's held components and leaves the lazy ones to the store, so the footprint
-// has to be readable per component rather than per row.
+// Per-component attribution of the resident bytes: a row's value bytes are
+// readable per component rather than only per row.
 const componentBytes = new Map<string, { rows: number; bytes: number }>();
-for (const row of heldRows) {
+for (const row of residentRows) {
   for (const [field, value] of Object.entries(row.data.fields)) {
     const component = fieldComponent(row.model, field);
-    if (!heldMetadata.holds(component)) continue;
     const bucket = componentBytes.get(component) ?? { rows: 0, bytes: 0 };
     bucket.rows += 1;
     bucket.bytes += jsonBytes(value);
@@ -1038,11 +1026,11 @@ const componentSubtotal = componentRows.reduce((sum, [, bucket]) => sum + bucket
 
 push("### Resident bytes by component", "");
 push(
-  "Every held component of every held row, attributed by its value bytes. This is the #802",
+  "Every component of every resident row, attributed by its value bytes. This",
   "residency view: the row-level buckets above are models, these are the units the replica keeps",
   "or leaves to the store.",
   "",
-  "| component | rows carrying | JSON bytes | size | % of held components |",
+  "| component | rows carrying | JSON bytes | size | % of resident components |",
   "| --- | ---: | ---: | ---: | ---: |",
 );
 for (const [component, bucket] of componentRows) {
@@ -1051,17 +1039,17 @@ for (const [component, bucket] of componentRows) {
   );
 }
 push(
-  `| **held components subtotal** | — | ${bytes(componentSubtotal)} | ${mb(componentSubtotal)} | 100.0% |`,
+  `| **resident components subtotal** | — | ${bytes(componentSubtotal)} | ${mb(componentSubtotal)} | 100.0% |`,
   "",
 );
 
 push("### Heap bytes the replica retains (V8)", "");
 push(
   "Each rep runs in one measurement window, sampling `heapUsed` after two forced GCs at every",
-  "step: the held rows allocated fresh (their own row objects, not the workspace's), then one",
+  "step: the resident rows allocated fresh (their own row objects, not the workspace's), then one",
   "`Map<id, row>` over exactly those rows, then a replica `load`ed over the same rows — so",
   "**adjacency indices + model index = replica structures − base map** and **resident metadata",
-  "total = held rows + replica structures**, with the base map kept as the subtraction baseline",
+  "total = resident rows + replica structures**, with the base map kept as the subtraction baseline",
   "and not added to the total. Every rep's rows, record, map, and replica stay pinned, so a",
   "later forced GC cannot reclaim an earlier rep's account.",
   "",
@@ -1083,11 +1071,11 @@ if (heapAccounts === null) {
   push(
     "| account | median | min | max | reps | % of hypothetical full workspace |",
     "| --- | ---: | ---: | ---: | ---: | ---: |",
-    `| held rows (fresh row objects + the record's reference array) | ${mb(median(rowsAccount))} | ${mb(minOf(rowsAccount))} | ${mb(maxOf(rowsAccount))} | ${HEAP_REPS} | — |`,
+    `| resident rows (fresh row objects + the record's reference array) | ${mb(median(rowsAccount))} | ${mb(minOf(rowsAccount))} | ${mb(maxOf(rowsAccount))} | ${HEAP_REPS} | — |`,
     `| base map (\`Map<id, row>\` over the same rows — reference cost, not in the total) | ${mb(median(baseMapAccount))} | ${mb(minOf(baseMapAccount))} | ${mb(maxOf(baseMapAccount))} | ${HEAP_REPS} | — |`,
     `| replica structures (its own base map + model index + both adjacency indices) | ${mb(median(replicaAccount))} | ${mb(minOf(replicaAccount))} | ${mb(maxOf(replicaAccount))} | ${HEAP_REPS} | — |`,
     `| **adjacency indices + model index (replica structures − base map)** | **${mb(median(indicesAccount))}** | ${mb(minOf(indicesAccount))} | ${mb(maxOf(indicesAccount))} | ${HEAP_REPS} | — |`,
-    `| **resident metadata total (held rows + replica structures)** | **${mb(median(totals))}** | ${mb(minOf(totals))} | ${mb(maxOf(totals))} | ${HEAP_REPS} | **${fullWorkspaceShare}** |`,
+    `| **resident metadata total (resident rows + replica structures)** | **${mb(median(totals))}** | ${mb(minOf(totals))} | ${mb(maxOf(totals))} | ${HEAP_REPS} | **${fullWorkspaceShare}** |`,
     "",
     `The indices are ${indicesShare} of that total; the replica's own base map is about ${baseMapShare} (the reference map above), and the freshly allocated rows are the rest.`,
     "The JSON row number above and this heap total are different units and must not be added",
@@ -1173,14 +1161,14 @@ push(
 
 // 3. Search
 push(
-  "## 3. Search over held pages",
+  "## 3. Search over resident pages",
   "",
   "No search surface ships yet. The substring scan is the shape a search would ride on today",
   '(`replica.iterate("page")` plus a title filter), not a shipped feature. The two',
   "`executePlan` rows are the shipped query path with a filter and as a whole-type scan; the",
   "whole-type scan also orders by id, which is an O(n log n) `localeCompare` sort.",
   "",
-  `Each visits all ${grouped(pageRowsHeld)} held \`page\` rows. Median per call over ${LATENCY_BATCHES} batches of ${SEARCH_CALLS_PER_BATCH} calls.`,
+  `Each visits all ${grouped(pageRowsHeld)} resident \`page\` rows. Median per call over ${LATENCY_BATCHES} batches of ${SEARCH_CALLS_PER_BATCH} calls.`,
   "",
   "| path | µs/call (median) | rows visited/call | rows matched (median) | store reads/call |",
   "| --- | ---: | ---: | ---: | ---: |",
@@ -1218,11 +1206,11 @@ push(
   )}× that`,
   "narrower projection because it derives both adjacency directions for `relationship`",
   "and `membership` rows into plain objects, plus the model index. Measured:",
-  `${usPerCall(loadMedian / Math.max(1, stats.held))} per held row and ${fixed(
+  `${usPerCall(loadMedian / Math.max(1, stats.entities))} per resident row and ${fixed(
     (loadMedian / Math.max(1, indexShape.reverseRows + indexShape.forwardRows)) * 1000,
     3,
   )} µs per index entry — the repeat-load median divided by the`,
-  `${grouped(stats.held)} held rows and by the ${grouped(
+  `${grouped(stats.entities)} resident rows and by the ${grouped(
     indexShape.reverseRows + indexShape.forwardRows,
   )} reverse+forward index rows above.`,
   "The build is a measurement, not a gate.",
@@ -1233,7 +1221,7 @@ push(
 push(
   "## 5. Leased bodies",
   "",
-  `\`${ON_DEMAND_TYPE}\` is the schema's on-demand type: not held, so \`load\` drops it and`,
+  `\`${BODY_TYPE}\` is the store-backed type: the record does not carry it, so`,
   "`replica.read(id, components)` reads it through the store under a lease",
   "(`residencyTtlMs: 0` here, so a read stays warm for the whole sweep). Each document",
   "below is read once, so every timed read is cold; a second read inside the grace",
@@ -1249,9 +1237,9 @@ push(
   `| store rows read per cold read | ${grouped(coldReads)} |`,
   `| store rows read by a warm re-read | ${grouped(warmReads)} |`,
   `| resident bodies after the sweep | ${grouped(bodiesResident)} |`,
-  `| leases held by the sweep | ${grouped(bodyLeases.leased)} |`,
-  `| inactive bodies waiting out their grace period | ${grouped(bodyLeases.inactive)} |`,
-  `| held bodies (\`heldByModel\`) | ${grouped(stats.heldByModel[ON_DEMAND_TYPE] ?? 0)} |`,
+  `| leases live during the sweep | ${grouped(bodyLeases.leased)} |`,
+  `| claims waiting out their grace period | ${grouped(bodyLeases.inactive)} |`,
+  `| body rows resident after the sweep | ${grouped(stats.byModel[BODY_TYPE] ?? 0)} |`,
   "",
 );
 
@@ -1327,7 +1315,7 @@ push(
   "",
   `_Harness runtime: ${fixed((performance.now() - harnessStart) / 1000, 1)} s from module start ` +
     `(fixture generation, ${HEAP_REPS} heap reps, ${LOAD_REPS} build reps, ${LATENCY_BATCHES} batches ` +
-    `per timed read, one on-demand body sweep, ${changeWorkloads.length} change workloads)._`,
+    `per timed read, one store-backed body sweep, ${changeWorkloads.length} change workloads)._`,
   "",
 );
 

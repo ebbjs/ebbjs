@@ -12,7 +12,6 @@ export type { CursorRecord, CursorStore, SeedMarker } from "./cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./replica-store";
 export type {
   ContentChange,
-  MaterializationPolicy,
   MembershipChange,
   MembershipQuery,
   MembershipTransition,

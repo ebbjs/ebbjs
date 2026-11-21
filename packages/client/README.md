@@ -111,8 +111,8 @@ Grammar:
   is rejected.
 - `select({ field: true, ... })` — projects only the fields named. The same
   declaration is the read's lease set and its invalidation key: a selected
-  field is returned, held, and watched, and a write to an unselected component
-  leaves the result alone. `.select({})` returns only the structural keys
+  field is returned, claimed, and watched, and a write to an unselected
+  component leaves the result alone. `.select({})` returns only the structural keys
   (`id`, and `groupIds` on a query row). System components are never
   selectable: `groupIds`, a predicate's or join's edge/membership reads, and a
   joined target are supplied by the planner.
@@ -144,30 +144,26 @@ type IssueRow = QueryRowOf<typeof schema, "issue", "assignee">;
 const issues: readonly IssueRow[] = await client.issue.query().with({ assignee: true });
 ```
 
-### Materialization
+### Residency
 
-An entity type is `held` (the replica materializes every row) or `on-demand`
-(a row materializes only while a read leases it). Declare it on the definition:
+Nothing declares what stays in memory. A row the replica holds carries a value
+for every component it knows: a synced Action folds its components, and a
+`load` adopts the record whole. A row the replica does not hold — a group
+outside the client's subscribed scope, a view the record did not carry — is the
+entity store's to serve, and a read installs it:
 
 ```typescript
-const pageContent = defineModel(
-  "page_content",
-  { content: e.map(e.string()) },
-  { materialization: "on-demand" },
-);
+// The store serves the row; the read projects it and releases it again.
+const page = await client.page.get(pageId);
 ```
 
-A document entity declared `{ materialization: "on-demand" }` keeps the heavy
-body out of the replica while the page, its relationships, and its memberships
-stay held. Residency is per component and owned by leases: a read claims the
-components it installs and releases them before it returns, so the value stays
-warm for `residencyTtlMs` (default 60 s) and a remount inside that reads
-nothing. There is no cap on how many components a client holds, so reading a
-second component never takes the first away from a screen still reading it.
-`client.replica.stats().leases` reports what is leased, what is only waiting out
-its grace period, and for how long, per component. The persisted replica record
-holds the held components only — a lazy component's existence survives in
-`notResident`, its value never does.
+A read claims what it installs. Releasing the last claim starts one residency
+grace period (`residencyTtlMs`, default 60 s), so a remount inside it reads
+nothing; when it elapses the row a read installed leaves the replica whole and
+the next read goes back to the store. A value the Action log folded is not the
+claim's to release: nothing evicts it, so no lease keeps it and no expiry takes
+it. There is no cap, so reading a second row never takes the first away from a
+screen still reading it.
 
 A live subscription owns what it read: `row.subscribe` claims the components its
 read selected until it unsubscribes, and a query subscription claims the
@@ -179,7 +175,9 @@ and claims for the same `residencyTtlMs`, so a remount inside it reads nothing
 and re-runs only when a relevant change landed. `client.subscriptions` is the
 registry those live subscriptions live in. Two readers of one row that selected
 different components hold separate claims, so one cannot observe a partial row
-behind the other's lease.
+behind the other's lease. `client.replica.stats().leases` reports what is
+leased, what is only waiting out its grace period, and for how long, per
+component.
 
 A read that projects a component the replica does not hold is not refused. It
 narrows the ids first — scan, predicates, order, `limit` — and then acquires only
@@ -190,11 +188,14 @@ the page it projects:
 const docs = await client.page_content.query().select({ content: true }).limit(20);
 ```
 
-An unlimited projection is therefore a full read of the type — page it with
-`limit`. A single row is opened the same way, with
-`get(id, { select: { content: true } })`, and its `subscribe` keeps claiming the
-selected components. A join leases its target after the page is chosen:
-`with({ content: true })` acquires the joined rows before projecting them.
+A single row is read the same way, with `get(id, { select: { content: true } })`,
+and its `subscribe` keeps claiming the selected components. A join leases its
+target after the page is chosen: `with({ content: true })` acquires the joined
+rows before projecting them.
+
+The persisted replica record is a snapshot of what memory held, not a durability
+claim: the entity store already has every synced row, so the record only makes a
+cold start cheaper.
 
 ### Writes — actions
 

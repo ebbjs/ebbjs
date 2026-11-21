@@ -36,11 +36,11 @@ describe("e.log", () => {
     expect(doc.markers.content).toEqual({ type: "lww", map: true, log: true });
   });
 
-  it("carries the log marker on a named component with its own policy", () => {
-    const updates = defineComponent("note/updates", e.log(e.number()), { loading: "lazy" });
+  it("carries the log marker on a named component", () => {
+    const updates = defineComponent("note/updates", e.log(e.number()));
 
     expect(updates.marker).toEqual({ type: "lww", map: true, log: true });
-    expect(updates.loading).toBe("lazy");
+    expect(updates.name).toBe("note/updates");
   });
 
   it("validates like an ordinary keyed component", () => {
@@ -87,7 +87,7 @@ describe("ModelRegistry.isLogField", () => {
   it("answers the same way for a named component with its own policy", () => {
     const note = defineModel("note", {
       title: e.string(),
-      updates: defineComponent("note/updates", e.log(e.string()), { loading: "lazy" }),
+      updates: defineComponent("note/updates", e.log(e.string())),
     });
     const models = new ModelRegistry();
     models.register(note);

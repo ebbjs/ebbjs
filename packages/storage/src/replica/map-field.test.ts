@@ -9,7 +9,7 @@ import {
 } from "@ebbjs/core";
 
 import { MAP_FIELD_FLIP_POINT, isShardedMapField } from "../internal/map-field";
-import { createReplica, holdAll } from "./replica";
+import { createReplica } from "./replica";
 
 const leaf = (value: unknown, ms = 1, updateId = `u_${ms}`): FieldValue => ({
   value,
@@ -60,7 +60,7 @@ const contentOf = (entity: Entity | undefined): FieldValue | undefined =>
 
 describe("replica map fields over the flip point", () => {
   it("adopts a large map from a put and keeps the wire view intact", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(MAP_FIELD_FLIP_POINT + 100);
     replica.ingest(put, put.updates, 1);
 
@@ -72,7 +72,7 @@ describe("replica map fields over the flip point", () => {
   });
 
   it("merges a one-key patch with the same result as the flat wire merge", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(1000);
     replica.ingest(put, put.updates, 1);
     const patch = patchRun("run_42", "edited", 2, 2);
@@ -84,7 +84,7 @@ describe("replica map fields over the flip point", () => {
   });
 
   it("keeps a losing patch on the same data reference across the container", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(1000);
     replica.ingest(put, put.updates, 1);
     const before = replica.get("doc_1");
@@ -99,7 +99,7 @@ describe("replica map fields over the flip point", () => {
   });
 
   it("bumps the revision on an equal-HLC tiebreak inside a container", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(1000);
     replica.ingest(put, put.updates, 1);
     const revision = replica.revision;
@@ -117,7 +117,7 @@ describe("replica map fields over the flip point", () => {
   });
 
   it("writes only the flat wire shape into the persisted record", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(1000);
     replica.ingest(put, put.updates, 1);
     const patch = patchRun("run_0", "edited", 2, 2);
@@ -131,12 +131,12 @@ describe("replica map fields over the flip point", () => {
   });
 
   it("re-adopts the container when the record is loaded back", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(1000);
     replica.ingest(put, put.updates, 1);
     const record = replica.toRecord();
 
-    const reloaded = createReplica({ materialization: holdAll });
+    const reloaded = createReplica();
     reloaded.load(record);
 
     const content = contentOf(reloaded.get("doc_1"));
@@ -155,7 +155,6 @@ describe("replica map fields over the flip point", () => {
       last_gsn: 1,
     };
     const replica = createReplica({
-      materialization: { holds: () => false },
       readComponent: async () => row,
     });
 
@@ -165,7 +164,7 @@ describe("replica map fields over the flip point", () => {
   });
 
   it("leaves a map below the flip point on the plain object", () => {
-    const replica = createReplica({ materialization: holdAll });
+    const replica = createReplica();
     const put = putDoc(MAP_FIELD_FLIP_POINT - 1);
     replica.ingest(put, put.updates, 1);
 

@@ -44,7 +44,6 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import {
   applyUpdate,
   createReplica,
-  type MaterializationPolicy,
   type Replica,
   type ReplicaStats,
 } from "@ebbjs/storage/replica";
@@ -485,9 +484,8 @@ export class SyncClient<
       this.registryViolationListeners.add(opts.onRegistryViolation);
     }
     this.replica = createReplica({
-      materialization: residencyFromRegistry(this.registry),
       versions: { declared: (component) => this.registry.versionOf(component) },
-      readComponent: (id, component) => this.readStoredComponent(id, component),
+      readComponent: (id) => this.readStoredComponent(id),
       residencyTtlMs: opts.residencyTtlMs,
     });
     this.componentMigrations =
@@ -2283,16 +2281,12 @@ export class SyncClient<
   }
 
   /**
-   * The component-level cold-read seam. The local store is row-shaped, so the
-   * component is projected out of one by-id read; a caller counting component
-   * reads sees exactly the one it asked for.
+   * The store read behind a residency miss. The store is row-shaped, so one
+   * by-id read serves whichever component was asked for, and the replica keeps
+   * the whole row: no declaration narrows what a read may retain.
    */
-  private async readStoredComponent(id: string, component: string): Promise<Entity | null> {
-    const row = await this.storage.entities.get(id);
-    if (row === null) return null;
-    const field = componentField(component);
-    const value = row.data.fields[field];
-    return value === undefined ? row : { ...row, data: { fields: { [field]: value } } };
+  private async readStoredComponent(id: string): Promise<Entity | null> {
+    return this.storage.entities.get(id);
   }
 
   /**
@@ -2300,11 +2294,10 @@ export class SyncClient<
    * replica's composed view, clearing the dirty flag so a later read does
    * not replay the log over them.
    *
-   * Only a row whose components are all held mirrors the replica. A row with
-   * an on-demand component is partial in the replica (#802) and the store is
-   * that component's read source, so the Update is applied to the stored row
-   * instead. A later read installs and leases the component, exactly as it
-   * would a row read back from the server.
+   * Only a fully resident row mirrors the replica. A row the replica holds
+   * carries a value for every component it knows, so the guard is the proof
+   * that mirroring replaces the stored row rather than truncating it; a row
+   * that fails it is updated from the stored row instead.
    *
    * A subject the replica drops is normally left untouched — the shim
    * cannot represent absence, and the echo corrects it. A `delete` is the
@@ -2320,7 +2313,7 @@ export class SyncClient<
   ): Promise<void> {
     for (const update of action.updates) {
       const replicaRow = this.replica.get(update.subject_id);
-      if (replicaRow !== undefined && this.replica.isRowHeld(replicaRow)) {
+      if (replicaRow !== undefined && this.replica.fullyResident(replicaRow)) {
         await this.storage.dirtyTracker.clear(update.subject_id);
         await this.storage.entities.set(replicaRow);
         continue;
@@ -2417,17 +2410,6 @@ const modelConflictScopeFor = (registry: ModelRegistry, model: string): Conflict
   if (registry.has(model)) return registry.modelConflictScope(model);
   return systemPolicyRegistry.modelConflictScope(model);
 };
-
-/**
- * Replica residency declared by the entity registry. Residency is per
- * component: a model marked `on-demand` seeds `lazy` on each of its components
- * (#795), and a component may declare `loading: "lazy"` on its own. An
- * undeclared component stays held.
- */
-const residencyFromRegistry = (registry: ModelRegistry): MaterializationPolicy => ({
-  holds: (component) =>
-    registry.loadingOf(componentModel(component), componentField(component)) === "eager",
-});
 
 /**
  * Deterministic content hash of a composed schema. The 64-bit FNV-1a

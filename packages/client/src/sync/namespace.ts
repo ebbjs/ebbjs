@@ -868,7 +868,7 @@ export function createEntityNamespace<
   /**
    * The single-row read. `select` narrows both the projection and the
    * components leased; without one the read returns every component the stored
-   * row carries and claims every one the replica does not hold.
+   * row carries and claims every one that only a lease keeps resident.
    */
   const getRow = async (
     id: string,
@@ -888,17 +888,17 @@ export function createEntityNamespace<
     await replica.hydrate();
     const entity = await storage.entities.get(id);
     if (entity === null || entity.model !== entityName) return null;
-    if (fields === null && replica.replica.isRowHeld(entity)) {
+    if (fields === null && replica.replica.fullyResident(entity)) {
       return buildRow(entity, null, null);
     }
     // The store row is the full row; claim the components this read leases —
     // the selection, or every carried component when it selected nothing — so
-    // an on-demand value is installed before projection. The claim is released
-    // once the row is projected: the returned row owns its values.
+    // a component the replica lacks is installed before projection. The claim
+    // is released once the row is projected: the returned row owns its values.
     const leased = (
       components ??
       Object.keys(entity.data.fields).map((field) => fieldComponent(entity.model, field))
-    ).filter((component) => !replica.replica.isHeld(component));
+    ).filter((component) => !replica.replica.isComponentResident(id, component));
     const release = await replica.replica.acquire(id, leased);
     try {
       return buildRow(replica.replica.get(id) ?? entity, fields, components);

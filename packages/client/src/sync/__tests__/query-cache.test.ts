@@ -690,13 +690,10 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(1);
   });
 
-  it("re-runs a rows read for a row the replica does not retain", async () => {
-    // Every `document/*` component is materialized on demand, so the replica
-    // keeps the row without keeping a value of it — and `iterate` still answers
-    // with it, which is all a rows read scans.
-    const replica = createReplica({
-      materialization: { holds: (component) => !component.startsWith("document/") },
-    });
+  it("re-runs a rows read for a row that enters the model", async () => {
+    // A create plus a component write is a row entering the set a rows read
+    // scans, so the result re-runs.
+    const replica = createReplica();
     const cache = createQueryCache(replica);
     const source = sourceWith(() => replica.iterate("document"));
     const store = cache.watch("rows", emptyQuery("document"), source);
@@ -772,15 +769,14 @@ describe("query cache: one inactive lifetime (#941)", () => {
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   /**
-   * A replica whose `todo/title` is on demand, so a store read is observable.
+   * A replica that does not hold the row yet, so a store read is observable.
    * The result claims that component while it is live *and* while it is the
    * inactive result that owns it.
    */
-  const lazyReplica = (residencyTtlMs?: number) => {
+  const readBackReplica = (residencyTtlMs?: number) => {
     const rows: Record<string, Entity> = { todo_1: row("todo_1") };
     let reads = 0;
     const replica = createReplica({
-      materialization: { holds: (component) => component !== "todo/title" },
       readComponent: async (id) => {
         reads += 1;
         return rows[id] ?? null;
@@ -818,7 +814,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
   };
 
   it("reuses a warm result on remount with no store read and no re-run", async () => {
-    const { replica, reads } = lazyReplica();
+    const { replica, reads } = readBackReplica();
     const { cache } = cacheOver(replica, 100);
     const counter = { runs: 0 };
     const first = cache.watch("rows", todoQuery(), readingSource(replica, counter));
@@ -842,7 +838,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
   });
 
   it("re-runs once on remount when a relevant change landed while inactive", async () => {
-    const { replica, reads } = lazyReplica();
+    const { replica, reads } = readBackReplica();
     const { cache } = cacheOver(replica, 100);
     const counter = { runs: 0 };
     const source = readingSource(replica, counter);
@@ -868,7 +864,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
   });
 
   it("keeps a result while it still has a subscriber, past the TTL", async () => {
-    const { replica } = lazyReplica();
+    const { replica } = readBackReplica();
     const { cache } = cacheOver(replica, 10);
     const counter = { runs: 0 };
     const store = cache.watch("rows", todoQuery(), readingSource(replica, counter));
@@ -885,7 +881,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
   });
 
   it("drops the result after the residency TTL and releases the claims it owned", async () => {
-    const { replica, reads } = lazyReplica(20);
+    const { replica, reads } = readBackReplica(20);
     const { cache, registry } = cacheOver(replica, 20);
     const counter = { runs: 0 };
     const store = cache.watch("rows", todoQuery(), readingSource(replica, counter));
@@ -911,7 +907,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
   });
 
   it("owns no timer: unsubscribing arms the one retention timer", async () => {
-    const { replica } = lazyReplica();
+    const { replica } = readBackReplica();
     const { cache } = cacheOver(replica, 40);
     const store = cache.watch("rows", todoQuery(), readingSource(replica, { runs: 0 }));
     const detach = store.subscribe(() => {});
@@ -1019,11 +1015,10 @@ describe("query cache: change-journal floor (#499)", () => {
 });
 
 describe("query cache: lease ownership (#937)", () => {
-  /** A replica whose `todo/title` is on demand, so a claim is observable. */
-  const lazyReplica = (): ReturnType<typeof createReplica> => {
+  /** A replica that does not hold the row, so a claim is observable. */
+  const readBackReplica = (): ReturnType<typeof createReplica> => {
     const rows: Record<string, Entity> = { todo_1: row("todo_1") };
     return createReplica({
-      materialization: { holds: (component) => component !== "todo/title" },
       readComponent: async (id) => rows[id] ?? null,
       residencyTtlMs: 20,
     });
@@ -1033,7 +1028,7 @@ describe("query cache: lease ownership (#937)", () => {
     createQueryCache(replica, createSubscriptionRegistry(replica, { residencyTtlMs: 20 }));
 
   it("leases the components a live result read and keeps them through its inactive lifetime", async () => {
-    const replica = lazyReplica();
+    const replica = readBackReplica();
     await replica.read("todo_1", ["todo/title"]);
     const cache = cacheOver(replica);
     const store = cache.watch(
@@ -1061,7 +1056,7 @@ describe("query cache: lease ownership (#937)", () => {
   });
 
   it("keeps its claims through a failed run and releases them when the result ends", async () => {
-    const replica = lazyReplica();
+    const replica = readBackReplica();
     await replica.read("todo_1", ["todo/title"]);
     const cache = cacheOver(replica);
     let shouldFail = false;
@@ -1090,7 +1085,7 @@ describe("query cache: lease ownership (#937)", () => {
   });
 
   it("keeps its claims through a render throw and releases them when the result ends", async () => {
-    const replica = lazyReplica();
+    const replica = readBackReplica();
     await replica.read("todo_1", ["todo/title"]);
     const cache = cacheOver(replica);
     const store = cache.watch("rows", todoQuery(), {

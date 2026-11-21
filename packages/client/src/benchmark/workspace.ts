@@ -3,11 +3,11 @@
  *
  * The shape mirrors the epic #495 spike so its numbers stay comparable:
  *
- *   - `n` `page` rows (title, icon, updated_at) — the held metadata,
+ *   - `n` `page` rows (title, icon, updated_at) — the resident metadata,
  *   - one `parent` edge per page (a BRANCH-ary tree) plus REFS_PER_PAGE
- *     `references` edges per page — held `relationship` rows,
- *   - one `ebb/membership` row per page plus a workspace `ebb/group` — held,
- *   - heavy `page_content` rows that stay windowed.
+ *     `references` edges per page — resident `relationship` rows,
+ *   - one `ebb/membership` row per page plus a workspace `ebb/group` — resident,
+ *   - heavy `page_content` rows the record leaves out, so the store serves them.
  *
  * Every row is generated once, in memory: seeding through the memory
  * adapter's `set` is O(n²) (39,999 inserts took 507.7 s on the spike), so
@@ -28,8 +28,8 @@ import {
 import { REPLICA_RECORD_FORMAT } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
-/** The model the shipped residency policy leaves windowed. */
-export const ON_DEMAND_TYPE = "page_content";
+/** The model whose rows only the store carries: a read installs them under a lease. */
+export const BODY_TYPE = "page_content";
 
 /** The one group every page is filed into. */
 export const WORKSPACE_GROUP_ID = "grp_ws";
@@ -43,9 +43,6 @@ export const UPDATED_AT_BASE = 1_700_000_000_000;
  * footprint of the full body set is measured from one representative row.
  */
 const BODY_DOCS = 100;
-
-/** Bodies written into the record so `load` can be seen dropping them. */
-const RECORD_BODY_DOCS = 3;
 
 export interface BenchConfig {
   /** Documents (`page` rows). */
@@ -106,12 +103,10 @@ export interface WorkspaceCounts {
   readonly relationships: number;
   readonly memberships: number;
   readonly groups: number;
-  /** Rows `load` holds resident. */
-  readonly heldRows: number;
+  /** Metadata rows the record carries, so `load` makes them resident. */
+  readonly residentRows: number;
   /** Body rows the store can serve. */
   readonly bodyRows: number;
-  /** Body rows written into the record, which `load` drops. */
-  readonly recordBodyRows: number;
 }
 
 export interface Workspace {
@@ -239,7 +234,7 @@ const groupRow = (): Entity =>
   row(WORKSPACE_GROUP_ID, "ebb", { group: leaf("u_grp_ws_name", { name: "Workspace" }) });
 
 const bodyRow = (index: number, content: FieldValue): Entity =>
-  row(bodyId(index), ON_DEMAND_TYPE, { content });
+  row(bodyId(index), BODY_TYPE, { content });
 
 // ---------------------------------------------------------------------------
 // Workspace
@@ -250,11 +245,11 @@ const edgeCount = (config: BenchConfig): number =>
   Math.max(0, config.n - 1) + config.n * config.refsPerPage;
 
 /**
- * The held buckets, in load order: pages (each carrying its edge keys),
- * memberships, then the workspace group. `createHeldRows` and
+ * The resident buckets, in load order: pages (each carrying its edge keys),
+ * memberships, then the workspace group. `createResidentRows` and
  * `createWorkspace` both build from here so their id sets cannot drift apart.
  */
-const heldRowSet = (config: BenchConfig) => {
+const residentRowSet = (config: BenchConfig) => {
   const pages = Array.from({ length: config.n }, (_, index) => pageRow(config, index));
   const memberships = Array.from({ length: config.n }, (_, index) => membershipRow(index));
   const groups = [groupRow()];
@@ -268,27 +263,29 @@ const heldRowSet = (config: BenchConfig) => {
 };
 
 /**
- * Freshly allocated held rows only, as `ReplicaRecord.entities` expects them.
+ * Freshly allocated resident rows only, as `ReplicaRecord.entities` expects them.
  * The heap account needs its own row objects: the workspace record's rows are
  * shared with the store, so their bytes could not be attributed to the
  * benchmark's footprint. Same ids, count, and order as `createWorkspace`.
  */
-export const createHeldRows = (config: BenchConfig): readonly Entity[] => heldRowSet(config).rows;
+export const createResidentRows = (config: BenchConfig): readonly Entity[] =>
+  residentRowSet(config).rows;
 
 export const createWorkspace = (config: BenchConfig): Workspace => {
   const content = bodyContent(config);
-  const { pages, memberships, relationships, groups, rows: metadata } = heldRowSet(config);
+  const { pages, memberships, relationships, groups, rows: metadata } = residentRowSet(config);
 
   const bodyIndices = spreadIndices(config.n, BODY_DOCS);
   const bodies = bodyIndices.map((index) => bodyRow(index, content));
-  const recordBodyRows = bodies.slice(0, RECORD_BODY_DOCS);
 
+  // The record is the metadata base; a body is the store's to serve, which is
+  // what makes a body read observable as a store read.
   const record: ReplicaRecord = {
     format: REPLICA_RECORD_FORMAT,
     componentVersions: {},
     position: 0,
     revision: 1,
-    entities: [...metadata, ...recordBodyRows],
+    entities: [...metadata],
   };
 
   const bodyIds = bodyIndices.map(bodyId);
@@ -304,9 +301,8 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
       relationships,
       memberships: memberships.length,
       groups: groups.length,
-      heldRows: metadata.length,
+      residentRows: metadata.length,
       bodyRows: bodies.length,
-      recordBodyRows: recordBodyRows.length,
     },
     bodyBytes: Buffer.byteLength(JSON.stringify(representative)),
   };

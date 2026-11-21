@@ -106,10 +106,7 @@ export const scopeEvictedGroupIds = (
   return [...evicted];
 };
 
-/**
- * Fold `extra`'s rows into `base` by id, `base` winning an overlap. Residency
- * and version metadata merge by id too; an all-on-demand row exists only there.
- */
+/** Fold `extra`'s rows into `base` by id, `base` winning an overlap. */
 export const mergeReplicaRecords = (
   extra: ReplicaRecord | null,
   base: ReplicaRecord,
@@ -122,9 +119,7 @@ export const mergeReplicaRecords = (
   const merged = { ...base, entities: [...rows.values()] } as {
     -readonly [K in keyof ReplicaRecord]: ReplicaRecord[K];
   };
-  const notResident = { ...extra.notResident, ...base.notResident };
   const componentVersions = { ...extra.componentVersions, ...base.componentVersions };
-  if (Object.keys(notResident).length > 0) merged.notResident = notResident;
   if (Object.keys(componentVersions).length > 0) merged.componentVersions = componentVersions;
   return merged;
 };
@@ -133,22 +128,14 @@ export const mergeReplicaRecords = (
 export const withRetainedRows = (record: ReplicaRecord, durable: ReplicaRecord): ReplicaRecord => {
   const current = new Set(record.entities.map((entity) => entity.id));
   const retained = durable.entities.filter((entity) => !current.has(entity.id));
-  const notResident: Record<string, readonly string[]> = {};
-  if (durable.notResident !== undefined) {
-    for (const [id, components] of Object.entries(durable.notResident)) {
-      if (!current.has(id)) notResident[id] = components;
-    }
-  }
   const componentVersions: Record<string, Readonly<Record<string, number>>> = {};
   for (const [id, stamps] of Object.entries(durable.componentVersions)) {
     if (!current.has(id)) componentVersions[id] = stamps;
   }
-  if (record.notResident !== undefined) Object.assign(notResident, record.notResident);
   Object.assign(componentVersions, record.componentVersions);
   const merged = { ...record, entities: [...record.entities, ...retained] } as {
     -readonly [K in keyof ReplicaRecord]: ReplicaRecord[K];
   };
-  if (Object.keys(notResident).length > 0) merged.notResident = notResident;
   if (Object.keys(componentVersions).length > 0) merged.componentVersions = componentVersions;
   return merged;
 };

@@ -20,11 +20,7 @@ Node `>=22.8.0`.
 ```ts
 import { defineComponent, defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
-const body = defineComponent(
-  "issue/body",
-  { text: e.string() },
-  { optional: true, loading: "lazy" },
-);
+const body = defineComponent("issue/body", { text: e.string() }, { optional: true });
 
 const issue = defineModel("issue", {
   title: e.string(),

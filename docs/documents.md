@@ -80,9 +80,9 @@ defineModel(
     engine: defineComponent("note_body/engine", e.string().default("ebb.cells.v1")),
     // Its own component, not nested beside `engine` in one field map: a field-map
     // component is one atomic merge position, and `e.log` refuses that nesting.
-    updates: defineComponent("note_body/updates", e.log(TextCellSchema), { loading: "lazy" }),
+    updates: defineComponent("note_body/updates", e.log(TextCellSchema)),
   },
-  { materialization: "on-demand", conflictScope: "field" },
+  { conflictScope: "field" },
 );
 ```
 

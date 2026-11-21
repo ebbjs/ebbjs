@@ -25,16 +25,14 @@ import {
   createCounterSet,
   createCountingStore,
   createIndexCounter,
-  holdsRow,
-  heldMetadata,
   replicaAdjacency,
   replicaRowReader,
 } from "../harness";
 import {
   configWith,
-  createHeldRows,
+  createResidentRows,
   createWorkspace,
-  ON_DEMAND_TYPE,
+  BODY_TYPE,
   pageId,
   parentIndexOf,
   referenceTargetIndex,
@@ -61,7 +59,6 @@ const setup = (n: number) => {
   const workspace = createWorkspace(config);
   const store = createCountingStore(workspace.rows);
   const replica = createReplica({
-    materialization: heldMetadata,
     readComponent: store.read,
     // Disabled so a read stays warm across the assertions below.
     residencyTtlMs: 0,
@@ -134,19 +131,19 @@ const idsOf = (rows: readonly { readonly id: string }[]): readonly string[] =>
   rows.map((row) => row.id).sort();
 
 describe("replica read-model workspace", () => {
-  it("builds the held rows the workspace record holds", () => {
+  it("builds the resident rows the workspace record holds", () => {
     const { workspace } = setup(N);
-    const held = createHeldRows(workspace.config);
-    const recordHeld = workspace.record.entities.filter(holdsRow);
+    const resident = createResidentRows(workspace.config);
+    const recordResident = workspace.record.entities;
 
-    expect(held.length).toBe(workspace.counts.heldRows);
-    expect(held.length).toBe(recordHeld.length);
-    expect(idsOf(held)).toEqual(idsOf(recordHeld));
-    expect(new Set(held.map((entity) => entity.id)).size).toBe(held.length);
-    expect(held.filter((entity) => entity.model === ON_DEMAND_TYPE)).toEqual([]);
+    expect(resident.length).toBe(workspace.counts.residentRows);
+    expect(resident.length).toBe(recordResident.length);
+    expect(idsOf(resident)).toEqual(idsOf(recordResident));
+    expect(new Set(resident.map((entity) => entity.id)).size).toBe(resident.length);
+    expect(resident.filter((entity) => entity.model === BODY_TYPE)).toEqual([]);
   });
 
-  it("holds only the metadata rows", () => {
+  it("loads only the metadata rows", () => {
     const { replica, workspace } = setup(N);
     const stats = replica.stats();
 
@@ -156,9 +153,7 @@ describe("replica read-model workspace", () => {
       page: N,
       ebb: N + 1,
     });
-    expect(stats.heldByModel).toEqual(stats.byModel);
-    expect(stats.held).toBe(workspace.counts.heldRows);
-    expect(stats.entities).toBe(workspace.counts.heldRows);
+    expect(stats.entities).toBe(workspace.counts.residentRows);
 
     // One reverse entry per live edge plus one per membership row; only a
     // membership keeps a forward entry, because a source's own edges are a
@@ -227,18 +222,16 @@ describe("replica read-model workspace", () => {
     }
   });
 
-  it("keeps bodies off the held set: one store read cold, none while warm", async () => {
+  it("keeps bodies off the loaded set: one store read cold, none while warm", async () => {
     const { workspace, store, replica } = setup(N);
     const stats = replica.stats();
-    expect(stats.heldByModel.page_content).toBeUndefined();
     expect(stats.byModel.page_content).toBeUndefined();
-    expect(workspace.counts.recordBodyRows).toBeGreaterThan(0);
 
     const body = workspace.bodyIds[0];
     expect(replica.get(body)).toBeUndefined();
 
     store.reset();
-    const loaded = await replica.read(body, [`${ON_DEMAND_TYPE}/content`]);
+    const loaded = await replica.read(body, [`${BODY_TYPE}/content`]);
     expect(loaded?.id).toBe(body);
     expect(store.snapshot()).toEqual({ calls: 1, rows: 1 });
     const content = loaded?.data.fields["content"];
@@ -249,7 +242,7 @@ describe("replica read-model workspace", () => {
     // The read released its claim before returning, so the body is resident on
     // the grace period alone, and a warm re-read reads nothing.
     store.reset();
-    await replica.read(body, [`${ON_DEMAND_TYPE}/content`]);
+    await replica.read(body, [`${BODY_TYPE}/content`]);
     expect(store.snapshot().calls).toBe(0);
     expect(replica.stats().leases).toMatchObject({
       leased: 0,
