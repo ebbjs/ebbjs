@@ -378,40 +378,36 @@ describe("residency per component", () => {
 // Every component of a row (#934)
 // ---------------------------------------------------------------------------
 
-describe("a row with three on-demand components", () => {
-  const lazyNote = defineModel("lazy_note", {
-    title: defineComponent("lazy_note/title", e.string(), { loading: "lazy" }),
-    body: defineComponent("lazy_note/body", e.string(), { loading: "lazy" }),
-    appendix: defineComponent("lazy_note/appendix", e.string(), { loading: "lazy" }),
-  });
+describe("a row with more on-demand components than the old window", () => {
+  // Twenty on-demand components on one row, past the 16 the removed window
+  // held: on that code the earliest reads are dropped from the returned row.
+  const fields = Array.from({ length: 20 }, (_, index) => `f_${index}`);
+  const values = Object.fromEntries(fields.map((field) => [field, `${field} value`]));
+  const lazyNote = defineModel(
+    "lazy_note",
+    Object.fromEntries(
+      fields.map((field) => [
+        field,
+        defineComponent(`lazy_note/${field}`, e.string(), { loading: "lazy" }),
+      ]),
+    ),
+  );
   const lazyNoteSchema = defineSchema({ models: { lazy_note: lazyNote }, version: 1 });
   const lazyNoteId = "lazy_note_1";
 
-  it("returns all three after all three are read", async () => {
+  it("returns every component the read opened", async () => {
     const { client } = harness(lazyNoteSchema, { pinnedTtlMs: 0 });
-    await callApplyAction(
-      client,
-      put(1, lazyNoteId, "lazy_note", {
-        title: "One",
-        body: "300 KB body",
-        appendix: "1 MB appendix",
-      }),
-    );
+    await callApplyAction(client, put(1, lazyNoteId, "lazy_note", values));
 
     const row = await client.lazy_note.get(lazyNoteId);
 
-    expect(row).toMatchObject({
-      id: lazyNoteId,
-      title: "One",
-      body: "300 KB body",
-      appendix: "1 MB appendix",
-    });
+    expect(row).toMatchObject({ id: lazyNoteId, ...values });
     expect(
-      ["title", "body", "appendix"].map((field) =>
-        client.replica.isComponentResident(lazyNoteId, `lazy_note/${field}`),
+      fields.filter(
+        (field) => !client.replica.isComponentResident(lazyNoteId, `lazy_note/${field}`),
       ),
-    ).toEqual([true, true, true]);
-    expect(client.replicaStats.pinned).toBe(3);
+    ).toEqual([]);
+    expect(client.replicaStats.pinned).toBe(20);
   });
 });
 

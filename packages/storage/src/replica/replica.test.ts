@@ -1820,46 +1820,52 @@ describe("replica: on-demand residency (#500)", () => {
 });
 
 describe("replica: a read selects every component (#934)", () => {
-  // Every component of the row is on demand, so reading the row opens three.
+  // Every component of the row is on demand, so a read opens one per field.
+  // Three is the issue's repro; twenty is past the window the replica used to
+  // hold, so it goes red again if a cap ever comes back.
   const allOnDemand = { holds: (): boolean => false };
   const noteId = "note_1";
-  const components = ["note/title", "note/body", "note/appendix"];
-  const lazyRow = (): Entity =>
+  const fieldsOf = (count: number): readonly string[] =>
+    Array.from({ length: count }, (_, index) => `f_${index}`);
+
+  const lazyRow = (fields: readonly string[]): Entity =>
     entity({
       id: noteId,
       model: "note",
       data: {
-        fields: {
-          title: leaf("One", "u_title", 10),
-          body: leaf("300 KB body", "u_body", 10),
-          appendix: leaf("1 MB appendix", "u_appendix", 10),
-        },
+        fields: Object.fromEntries(
+          fields.map((field) => [field, leaf(`${field} value`, `u_${field}`, 10)]),
+        ),
       },
       created_hlc: makeHlc(10),
       updated_hlc: makeHlc(10),
     });
 
-  it("returns all three components of a row after all three are read", async () => {
+  const openEveryComponent = async (count: number): Promise<Replica> => {
     const replica = createReplica({
       materialization: allOnDemand,
       pinnedTtlMs: 0,
-      readComponent: async () => lazyRow(),
+      readComponent: async () => lazyRow(fieldsOf(count)),
     });
     ingest(replica, create({ actionId: "a_1", updateId: "u_1", ms: 10 }), 1);
+    for (const field of fieldsOf(count)) await replica.open(noteId, `note/${field}`);
+    return replica;
+  };
 
-    for (const component of components) await replica.open(noteId, component);
+  const expectEveryComponentResident = (replica: Replica, count: number): void => {
+    expect(Object.keys(replica.get(noteId)?.data.fields ?? {})).toHaveLength(count);
+    expect(
+      fieldsOf(count).filter((field) => !replica.isComponentResident(noteId, `note/${field}`)),
+    ).toEqual([]);
+    expect(replica.stats().pinned).toBe(count);
+  };
 
-    expect(Object.keys(replica.get(noteId)?.data.fields ?? {}).sort()).toEqual([
-      "appendix",
-      "body",
-      "title",
-    ]);
-    expect(components.map((component) => replica.isOpen(noteId, component))).toEqual([
-      true,
-      true,
-      true,
-    ]);
-    expect(replica.stats().pinned).toBe(3);
+  it("returns all three components of a row after all three are read", async () => {
+    expectEveryComponentResident(await openEveryComponent(3), 3);
+  });
+
+  it("returns all twenty components of a row after all twenty are read", async () => {
+    expectEveryComponentResident(await openEveryComponent(20), 20);
   });
 });
 
