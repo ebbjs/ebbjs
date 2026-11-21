@@ -1672,36 +1672,11 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.stats().pinned).toBe(0);
   });
 
-  it("releases the least recently opened row when the pinned window overflows", async () => {
-    const rows = {
-      doc_1: documentRow("doc_1"),
-      doc_2: documentRow("doc_2"),
-      doc_3: documentRow("doc_3"),
-    };
-    const replica = createReplica({
-      materialization: onDemand,
-      pinnedCapacity: 2,
-      pinnedTtlMs: 0,
-      readComponent: reader(rows),
-    });
-    await replica.open("doc_1", "document/text");
-    await replica.open("doc_2", "document/text");
-    await replica.open("doc_1", "document/text");
-    await replica.open("doc_3", "document/text");
-
-    expect(replica.isOpen("doc_2", "document/text")).toBe(false);
-    expect(replica.get("doc_2")).toBeUndefined();
-    expect(replica.isOpen("doc_1", "document/text")).toBe(true);
-    expect(replica.isOpen("doc_3", "document/text")).toBe(true);
-    expect(replica.stats().pinned).toBe(2);
-  });
-
-  it("retains every pinned row when the capacity is unbounded", async () => {
+  it("retains every opened row", async () => {
     const rows: Record<string, Entity> = {};
     for (let i = 1; i <= 20; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
     const replica = createReplica({
       materialization: onDemand,
-      pinnedCapacity: 0,
       pinnedTtlMs: 0,
       readComponent: reader(rows),
     });
@@ -1841,6 +1816,56 @@ describe("replica: on-demand residency (#500)", () => {
       expect(replica.stats().pinned).toBe(0);
       expect(replica.revision).toBe(revision);
     });
+  });
+});
+
+describe("replica: a read selects every component (#934)", () => {
+  // Every component of the row is on demand, so a read opens one per field.
+  // Three is the issue's repro; twenty is past the window the replica used to
+  // hold, so it goes red again if a cap ever comes back.
+  const allOnDemand = { holds: (): boolean => false };
+  const noteId = "note_1";
+  const fieldsOf = (count: number): readonly string[] =>
+    Array.from({ length: count }, (_, index) => `f_${index}`);
+
+  const lazyRow = (fields: readonly string[]): Entity =>
+    entity({
+      id: noteId,
+      model: "note",
+      data: {
+        fields: Object.fromEntries(
+          fields.map((field) => [field, leaf(`${field} value`, `u_${field}`, 10)]),
+        ),
+      },
+      created_hlc: makeHlc(10),
+      updated_hlc: makeHlc(10),
+    });
+
+  const openEveryComponent = async (count: number): Promise<Replica> => {
+    const replica = createReplica({
+      materialization: allOnDemand,
+      pinnedTtlMs: 0,
+      readComponent: async () => lazyRow(fieldsOf(count)),
+    });
+    ingest(replica, create({ actionId: "a_1", updateId: "u_1", ms: 10 }), 1);
+    for (const field of fieldsOf(count)) await replica.open(noteId, `note/${field}`);
+    return replica;
+  };
+
+  const expectEveryComponentResident = (replica: Replica, count: number): void => {
+    expect(Object.keys(replica.get(noteId)?.data.fields ?? {})).toHaveLength(count);
+    expect(
+      fieldsOf(count).filter((field) => !replica.isComponentResident(noteId, `note/${field}`)),
+    ).toEqual([]);
+    expect(replica.stats().pinned).toBe(count);
+  };
+
+  it("returns all three components of a row after all three are read", async () => {
+    expectEveryComponentResident(await openEveryComponent(3), 3);
+  });
+
+  it("returns all twenty components of a row after all twenty are read", async () => {
+    expectEveryComponentResident(await openEveryComponent(20), 20);
   });
 });
 

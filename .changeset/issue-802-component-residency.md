@@ -14,7 +14,7 @@ tracked as dormant. `Replica.open(id, component)` / `close(id, component)` addre
 component, the new `readComponent` seam returns one component's value, and
 `ReplicaStats` reports `components`, `residentComponents`, `heldComponents`,
 `pinnedComponents`, `nonResidentComponents`, and `nonResident`. `ReplicaStats.pinned`
-counts component pins, as do `pinnedCapacity` and the TTL.
+counts component pins, and the TTL bounds how long a closed one stays resident.
 
 The persisted replica record moves to format 3: rows carry their held components and a new
 `notResident` map carries the components whose values are not persisted. An older record

@@ -32,7 +32,6 @@ describe("@ebbjs/storage subpaths", () => {
     expect(typeof mod.holdAll.holds).toBe("function");
     expect(Object.keys(mod).sort()).toEqual([
       "DEFAULT_JOURNAL_CAPACITY",
-      "DEFAULT_PINNED_CAPACITY",
       "DEFAULT_PINNED_TTL_MS",
       "REPLICA_RECORD_FORMAT",
       "applyUpdate",

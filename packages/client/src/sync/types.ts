@@ -246,12 +246,6 @@ export interface SyncClientOptions<
    */
   queryTtlMs?: number;
   /**
-   * Maximum resident on-demand entity rows. Defaults to 16. Opening past the
-   * window releases the least recently opened row; a non-positive or
-   * non-finite value keeps every opened row resident.
-   */
-  pinnedCapacity?: number;
-  /**
    * How long a closed on-demand row stays cached, in ms. Defaults to 30_000.
    * A non-positive or non-finite value releases it on close; an open row is
    * never released by the TTL.

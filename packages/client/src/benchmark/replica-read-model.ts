@@ -268,7 +268,6 @@ const measureHeap = (
 const loadOptions = {
   materialization: heldMetadata,
   readComponent: store.read,
-  pinnedCapacity: 1,
   pinnedTtlMs: 0,
 } as const;
 
@@ -549,7 +548,7 @@ for (const searchCase of searchCases) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Windowed bodies
+// 5. On-demand bodies
 // ---------------------------------------------------------------------------
 
 const bodySample = workspace.bodyIds.slice(0, Math.min(100, workspace.bodyIds.length));
@@ -872,13 +871,13 @@ push(
   "",
 );
 
-// 5. Windowed bodies
+// 5. On-demand bodies
 push(
-  "## 5. Windowed bodies",
+  "## 5. On-demand bodies",
   "",
   `\`${ON_DEMAND_TYPE}\` is the schema's on-demand type: not held, so \`load\` drops it and`,
-  "`replica.open(id, component)` reads it through the store into a pinned window (`pinnedCapacity: 1`,",
-  "`pinnedTtlMs: 0`). Each open below follows a `close`, so every call is a cold read.",
+  "`replica.open(id, component)` reads it through the store into a pin (`pinnedTtlMs: 0`).",
+  "Each open below follows a `close`, so every call is a cold read.",
   "",
   "| measure | value |",
   "| --- | ---: |",

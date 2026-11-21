@@ -5,8 +5,8 @@
  * on-demand document's row exists as soon as its create arrives, with no
  * fields; its components are materialized only while it is open. A parent row
  * reaches its document through `row.body`; the document itself is read through
- * its own namespace's `get`, which pins it in an LRU window. `close` or the TTL
- * releases the components, and the body is never persisted as a replica row. A query
+ * its own namespace's `get`, which pins it. `close` or the TTL releases the
+ * components, and the body is never persisted as a replica row. A query
  * over an on-demand source is refused; a held source may join an on-demand
  * target, with the cached result going `stale` while the joined row loads.
  */
@@ -287,21 +287,6 @@ describe("on-demand document residency", () => {
     expect(client.replicaStats.pinned).toBe(0);
   });
 
-  it("releases the least recently opened body when the pinned window overflows", async () => {
-    const { client, written } = harness(pageSchema, { pinnedCapacity: 1, pinnedTtlMs: 0 });
-    const first = await createPage(client, written, { title: "One", body: "hello" });
-    const second = await createPage(client, written, { title: "Two", body: "world" });
-
-    await client.page_body.get(first.bodyId);
-    expect(client.replica.isOpen(first.bodyId, "page_body/content")).toBe(true);
-
-    const secondBody = await client.page_body.get(second.bodyId);
-    expect(textOf(secondBody!.content ?? {})).toBe("world");
-    expect(client.replica.isOpen(second.bodyId, "page_body/content")).toBe(true);
-    expect(client.replica.isOpen(first.bodyId, "page_body/content")).toBe(false);
-    expect(client.replica.get(first.bodyId)).toBeUndefined();
-  });
-
   it("persists held rows only, never an opened body", async () => {
     const { client, storage, written } = harness(pageSchema);
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
@@ -386,6 +371,43 @@ describe("residency per component", () => {
     await client.note.get(noteId);
     const reopened = await client.note.get(noteId);
     expect(reopened?.body).toBe("300 KB body");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Every component of a row (#934)
+// ---------------------------------------------------------------------------
+
+describe("a row with more on-demand components than the old window", () => {
+  // Twenty on-demand components on one row, past the 16 the removed window
+  // held: on that code the earliest reads are dropped from the returned row.
+  const fields = Array.from({ length: 20 }, (_, index) => `f_${index}`);
+  const values = Object.fromEntries(fields.map((field) => [field, `${field} value`]));
+  const lazyNote = defineModel(
+    "lazy_note",
+    Object.fromEntries(
+      fields.map((field) => [
+        field,
+        defineComponent(`lazy_note/${field}`, e.string(), { loading: "lazy" }),
+      ]),
+    ),
+  );
+  const lazyNoteSchema = defineSchema({ models: { lazy_note: lazyNote }, version: 1 });
+  const lazyNoteId = "lazy_note_1";
+
+  it("returns every component the read opened", async () => {
+    const { client } = harness(lazyNoteSchema, { pinnedTtlMs: 0 });
+    await callApplyAction(client, put(1, lazyNoteId, "lazy_note", values));
+
+    const row = await client.lazy_note.get(lazyNoteId);
+
+    expect(row).toMatchObject({ id: lazyNoteId, ...values });
+    expect(
+      fields.filter(
+        (field) => !client.replica.isComponentResident(lazyNoteId, `lazy_note/${field}`),
+      ),
+    ).toEqual([]);
+    expect(client.replicaStats.pinned).toBe(20);
   });
 });
 

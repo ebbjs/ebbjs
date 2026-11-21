@@ -31,6 +31,5 @@ One owner per duplicated concept, in `@ebbjs/core`.
 - `RESET_VERSIONS` replaces the seven `*_RESET_VERSION` constants and the hand-re-listed array built
   from them: one list of `{ version, reason }`, which `createEbbStores` and the doc block both read.
   A gate added to the list is a gate the reset runs; versions and behaviour are unchanged.
-- `DEFAULT_JOURNAL_CAPACITY` is exported for parity with `DEFAULT_PINNED_CAPACITY` and
-  `DEFAULT_PINNED_TTL_MS`, and the `ReplicaOptions` docs reference all three instead of restating
-  their numbers.
+- `DEFAULT_JOURNAL_CAPACITY` and `DEFAULT_PINNED_TTL_MS` are exported, and the `ReplicaOptions`
+  docs reference them instead of restating their numbers.

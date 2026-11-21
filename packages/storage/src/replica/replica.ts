@@ -61,15 +61,14 @@ export const holdAll: MaterializationPolicy = {
 };
 
 export const DEFAULT_JOURNAL_CAPACITY = 1024;
-export const DEFAULT_PINNED_CAPACITY = 16;
 export const DEFAULT_PINNED_TTL_MS = 30_000;
 
 /**
- * A capacity that retains everything is `Infinity`, so the trimmer never finds
+ * A journal that retains everything is `Infinity`, so the trimmer never finds
  * an excess. Non-positive and non-finite values are unbounded by contract.
  */
-const capacityOf = (capacity: number | undefined, fallback: number): number => {
-  if (capacity === undefined) return fallback;
+const journalCapacityOf = (capacity: number | undefined): number => {
+  if (capacity === undefined) return DEFAULT_JOURNAL_CAPACITY;
   if (!Number.isFinite(capacity) || capacity <= 0) return Number.POSITIVE_INFINITY;
   return Math.max(1, Math.floor(capacity));
 };
@@ -157,11 +156,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const overlay = new Map<string, OptimisticWrite[]>();
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
-  const journalCapacity = capacityOf(options?.journalCapacity, DEFAULT_JOURNAL_CAPACITY);
-  const pinnedCapacity = capacityOf(options?.pinnedCapacity, DEFAULT_PINNED_CAPACITY);
+  const journalCapacity = journalCapacityOf(options?.journalCapacity);
   const pinnedTtlMs = pinnedTtlOf(options?.pinnedTtlMs);
-  // Iteration order is LRU order: a touch deletes and re-adds, so the first
-  // key is the oldest pin.
   const pins = new Map<string, Pin>();
   const inFlightOpens = new Map<string, Promise<Entity | null>>();
   /** Cancels a cold read whose component was closed or evicted while it was loading. */
@@ -938,7 +934,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return changes;
   };
 
-  /** Set a pin without trimming, so a multi-component install settles as one. */
+  /** Keep a component's value resident until it is closed and its TTL elapses. */
   const pinComponent = (id: string, component: string): void => {
     const key = pinKey(id, component);
     dropPin(key);
@@ -977,22 +973,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     notify();
   };
 
-  /** Release the least recently opened components past the configured window. */
-  const trimPins = (): void => {
-    while (pins.size > pinnedCapacity) {
-      const oldest = pins.keys().next();
-      if (oldest.done === true) return;
-      releaseComponent(pinIdOf(oldest.value), pinComponentOf(oldest.value));
-    }
-  };
-
-  /** Mark a component as the most recently opened and trim the window. */
-  const openPin = (id: string, component: string): void => {
-    if (holds(component)) return;
-    pinComponent(id, component);
-    trimPins();
-  };
-
   const closePin = (id: string, component: string): void => {
     const pin = pins.get(pinKey(id, component));
     if (pin === undefined || !pin.open) return;
@@ -1003,6 +983,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
     pin.timer = setTimeout(() => releaseComponent(id, component), pinnedTtlMs);
     unrefTimer(pin.timer);
+  };
+
+  /** Mark a still-cached component open again, cancelling its pending release. */
+  const reopenPin = (id: string, component: string): void => {
+    const pin = pins.get(pinKey(id, component));
+    if (pin === undefined) return;
+    if (pin.timer !== null) {
+      clearTimeout(pin.timer);
+      pin.timer = null;
+    }
+    pin.open = true;
   };
 
   /** Read one component through the seam. */
@@ -1041,7 +1032,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (!holds(component)) pinComponent(id, component);
     for (const entry of buffered)
       applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
-    trimPins();
     resync(id, previous);
     notify();
     return true;
@@ -1053,8 +1043,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (view !== undefined) {
       const field = componentField(component);
       if (view.data.fields[field] !== undefined || pins.has(pinKey(id, component))) {
-        // Re-opening a resident component only touches the LRU window.
-        openPin(id, component);
+        reopenPin(id, component);
         return Promise.resolve(get(id) ?? view);
       }
     }
