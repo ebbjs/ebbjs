@@ -255,6 +255,20 @@ describe("replica read-model workspace", () => {
     });
   });
 
+  // #943: a synced body is resident whole, and #957 is where reclaiming it is
+  // decided. The fixture's store-backed split measures the read path, not the
+  // memory a real client keeps.
+  it("keeps a folded body resident with no lease to release it", () => {
+    const { workspace } = setup(N);
+    const body = workspace.rows.get(workspace.bodyIds[0] ?? "");
+    if (body === undefined) throw new Error("fixture produced no body row");
+    const folded = createReplica({});
+    folded.load({ ...workspace.record, entities: [...workspace.record.entities, body] });
+
+    expect(folded.stats().byModel[BODY_TYPE]).toBe(1);
+    expect(folded.stats().leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
+  });
+
   it("reads traversals off the replica index, never the store", async () => {
     const { adjacency, reader, counters } = setup(N);
 
