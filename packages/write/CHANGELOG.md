@@ -1,5 +1,252 @@
 # @ebbjs/write
 
+## 1.2.0
+
+### Minor Changes
+
+- ded31b2: The sync client's HTTP contract, its routes, its composite keys, and its value
+  comparison each have one owner.
+
+  `client/src/sync/http.ts` owns the actor header, the base-URL shape, and one body-read
+  policy for every request. `client/src/sync/endpoints.ts` names every route the client
+  calls — the group listing included, which test mocks now dispatch on instead of
+  re-deriving its prefix. `client/src/sync/keys.ts` builds composite keys with their parts
+  escaped, so a part that contains a separator no longer aliases two entries. `@ebbjs/core`
+  gains `structuralEqual` and `canonicalKey`, which replace the query cache's `sameValue`,
+  the query executor's `valuesEqual`, the schema hash's `stableStringify`, and the entity
+  diff's `stableValueString`.
+
+  `canonicalKey(value, { undefinedAs })` keeps both spellings of an absent value: the schema
+  hash keeps `"null"`, the entity diff keeps `"undefined"` so absence and a stored `null`
+  stay distinct. Both encode byte-for-byte as before.
+
+  No wire value changed. No schema hash changed. The conflict-slot, hold, migration, and
+  query-cache key strings changed, all in memory only — none is persisted or sent.
+
+  ```diff
+  -const response = await this.fetchImpl(`${this.serverUrl}/sync/handshake`, init);
+  -if (!response.ok) {
+  -  const text = await response.text().catch(() => "");
+  -  throw new Error(`handshake failed: ${response.status} ${text}`);
+  -}
+  +const data = await requestJson<HandshakeResponse>(
+  +  this.fetchImpl,
+  +  `${this.serverUrl}${handshakePath()}`,
+  +  init,
+  +  "handshake",
+  +);
+  ```
+
+- a682fe8: Conflict scope is declared and held per component.
+
+  `conflictScope` gains the middle rung on the ladder and is read per
+  component rather than per model: `"field"` surfaces an overlapping map
+  position, `"component"` any concurrent touch of the same component, and
+  `"entity"` any concurrent touch of the row. A field- or component-scope
+  loss holds only the contested component, so a sibling component of the same
+  row keeps flushing; an entity-scope loss holds the whole subject. The hold
+  is still derived from the durable `conflicted` rows. The persisted conflict
+  payload changed shape, so a store from an earlier release is discarded.
+
+  `structural: true` is the exemption the system rows declare. `STRUCTURAL_MODELS`
+  is gone: every component of `relationship`, `entityGroup`, and `groupMember`
+  opts out of detection, so an offline edge, membership, or grant write
+  converges and is never surfaced or held. A schema-less client resolves those
+  static declarations without a per-client registry. The exemption is a
+  component flag, not a fourth scope.
+
+  `EntityDiff` now reports `component` — the full `<model>/<field>` name —
+  beside `path`, matching the slot vocabulary, instead of a bare field name.
+  `Conflict` and `ConflictEntry` carry `holds`, the positions kept off the
+  wire.
+
+  Ebb is pre-1.0, so the breaking API changes ship as a minor, following the
+  #692 precedent.
+
+- c7fcfdf: Permissions name the component a write names, and grants match by ancestry.
+
+  There is no opt-in. `permission: "own"` is deleted from `defineComponent`; a schema that still
+  declares it now fails at load with an unknown-option error rather than being accepted quietly.
+  `ModelRegistry.permissionOf` is deleted.
+
+  A grant covers a write when its subject is the write's subject or an ancestor of it, and its verb
+  matches or is `*`:
+
+  ```text
+  "note.*"       // covers note/title and note/body
+  "note/title.*" // covers note/title, not note/body
+  "note.update"  // covers both: the model is the ancestor of its components
+  ```
+
+  A user row's create and delete still name no component, so they check the model: `note.create` and
+  `note.delete` keep their meaning. A value write checks the component named on the wire, so a
+  `note/body` update requires `note/body.update`. `note.*` covers it, and so does a grant whose
+  subject is the model (`note.update`), because the model is an ancestor of every component under
+  it. Every component an Action writes must be covered; an Action that writes `note/title` and
+  `note/body` needs a grant for both.
+
+  The platform's four components need no special case: `ebb/grant` is a subject under `ebb`, so
+  `ebb.*` covers it. `fullGroupPermissions` is one `<model>.*` wildcard per model instead of one per
+  component.
+
+  Writes can be field-granular; reads cannot. Read filtering remains a group fan-out property, so a
+  component grant narrows what a member may write, not what they may read.
+
+- 437c80d: The four system types are now `ebb/*` components of one `ebb` model.
+
+  `group`, `groupMember`, `entityGroup` and `relationship` are `ebb/group`, `ebb/grant`,
+  `ebb/membership` and `ebb/link`: four **atomic** components, each carrying one object value in one
+  Update. A torn edge, membership or grant is unrepresentable.
+
+  ```diff
+  -Update { component: "relationship/source_id", method: "patch", data: { value: "todo_1" } }
+  -Update { component: "relationship/target_id", method: "patch", data: { value: "todo_2" } }
+  -Update { component: "relationship/type",      method: "patch", data: { value: "todo" } }
+  -Update { component: "relationship/field",     method: "patch", data: { value: "dependsOn" } }
+  +Update { component: "ebb/link", method: "replace",
+  +         data: { value: { source_id: "todo_1", target_id: "todo_2",
+  +                          type: "todo", field: "dependsOn" } } }
+  ```
+
+  `ebb/membership`'s pair, `ebb/link`'s source and `ebb/grant`'s group are fixed at create; moving one
+  is a delete plus a create.
+
+  Permission subjects are the component: `group.*` → `ebb/group.*`, `groupMember.*` → `ebb/grant.*`,
+  `relationship.update|delete` → `ebb/link.update|delete`. A membership write authorizes as the
+  entity's `<model>.create` / `.update`, unchanged.
+
+  A group's `apps` is the list of app ids it is in scope for (`["notes"]`) rather than a map, because
+  an atomic value cannot contain a map. Absent is unscoped, `[]` is no app, and a scope edit writes
+  the whole `ebb/group` value.
+
+  `@ebbjs/core` exports the component vocabulary — `EBB_COMPONENTS`, `systemValue` — and no longer
+  declares the `Group`, `GroupMember` and `Relationship` row schemas; the component values are the
+  shapes. `GroupSeed.apps` is a `string[]`.
+
+  The client's replica store moves to v13 and starts empty: its adjacency index keys name components,
+  and a stored row is one atomic value.
+
+- dcd7063: An edge is a keyed component of its **source** row: `ebb/link` carries
+  `{ <field>: { <type>: { <targetId>: true } } }` instead of being a row of its own.
+
+  ```diff
+  -Update { subject_id: "rel_9f3", component: "ebb/link", method: "replace",
+  -         data: { value: { source_id: "todo_1", target_id: "todo_2",
+  -                          type: "todo", field: "dependsOn" } } }
+  +Update { subject_id: "todo_1", component: "ebb/link", method: "merge",
+  +         data: { map: { dependsOn: { map: { todo: { map: { todo_2: { value: true } } } } } } } }
+  ```
+
+  The edge's key is its whole identity — accessor, `type`, target — so two edges cannot share one, and
+  removing one edge is a `merge` whose value tombstones that key (`value: null`) rather than a row
+  delete. `drop` stays component-granular.
+
+  A link's group scope is its source row's membership by construction, so a source that moves takes its
+  edges with it and a peer that missed one obtains it by backfilling the source. There is no `rel_*`
+  id, and no mirrored `<source>/<as>` field.
+
+  `@ebbjs/client`: `setLinks({ replace })` refuses when the source row is not locally readable
+  rather than writing a partial set; `link` / `unlink` still write the key they name.
+
+  `@ebbjs/core` adds the value readers — `linkEdges`, `linkTargets`, `carriesLink`, `fieldComponent` —
+  and `RelationshipSeed` loses its `id`: an edge seeds as one merge on its source.
+  `systemValue`/`systemValueString` still answer for the three atomic platform components and answer
+  `null`/`false` for the keyed one.
+
+  `@ebbjs/write`: `buildRelationshipWrite` takes `sourceId` and an optional `currentTargets` (the live
+  set a `{ replace }` or a one-cardinality move diffs against) and returns the `ebb/link` Updates;
+  `buildRelationshipUpdate`, `buildManyEntityUpdate`, `collectManyTargetIds` and `relationshipSubjectId`
+  are deleted. `VerbResolution` is `{ groupsOf, targetsOf }` — `relationshipIdFor` and `fkTargetsOf`
+  are gone, because a target names the key an unlink removes. A many-cardinality `relate` is an add
+  unless `replace` is set; `replace` refuses when the live targets are unknown rather than writing a
+  partial set. `LinkWriteIds` is folded into `SystemRowIds`, and `linkEdgeUpdate` is no longer exported.
+
+  `@ebbjs/storage`: forward traversal is a component read, so `RelationshipLink` and
+  `queryByRelationshipSource` are deleted and the client's forward adjacency index with them;
+  `queryByRelationship` still answers the reverse direction. `DirtyTracker` gains `getDirty()` for the
+  reads that must materialize every dirty row. The IndexedDB read model moves to v17 and starts empty.
+
+  Only `link` is reserved on a user model, because `ebb/link` is the one platform overlay that shares
+  a row's field name; `group`, `grant` and `membership` are rows of their own under `ebb`, so
+  `defineModel` still accepts fields by those names. A link write authorizes as `ebb/link.<verb>` in
+  the source's group set, so `ebb.*` covers it and a model grant does not.
+
+  Server data is discarded: there is no migration and no dual shape.
+
+- 58835c6: One name per concept across the server and the client.
+
+  A row's committed model is `model`, not `type`, on the wire, in SQLite, in IndexedDB, in
+  the persisted replica record, and in `Entity`. `query(type)` is `query(model)`, `byType`
+  is `byModel`, `getDirtyForType` is `getDirtyForModel`, and the replica's `typeIndex` is
+  `modelIndex`. `type` now means one thing: a relationship's name.
+
+  The id → committed-model map is the model cache, not an index: `EntityTypeCache` is
+  `EntityModelCache`, `entity_types` is `entity_models`, `put_type`/`get_type` are
+  `put_model`/`get_model`. It is not the component existence index, which is unchanged.
+
+  The server's caches are named after the components they project: `EntityGroupCache` →
+  `MembershipCache`, `GroupCache` → `GrantCache`. The old model vocabulary is gone with
+  them — `entityGroupId` is `membershipRowId`, `LiveGroupMember` is `LiveGrant`,
+  `groupMembersOf` is `grantsOf`, the `last_group_member` refusal is `last_grant`, and the
+  seed types are `MembershipSeed` and `GrantSeed`. `ebbSystemEntity` is `ebbModel`;
+  `EntityIndex`, which resolves scope rather than indexing, is `EntityScope`; component
+  existence reads `carries?` rather than `present?`.
+
+  ```diff
+  -const entity = await replica.get(id); entity.type;
+  +const entity = await replica.get(id); entity.model;
+  -EntityTypeCache.put_type(id, "todo");
+  +EntityModelCache.put_model(id, "todo");
+  -entityGroupId(id, groupId);
+  +membershipRowId(id, groupId);
+  ```
+
+  Persisted shapes moved incompatibly, so each is discarded rather than migrated:
+  IndexedDB schema v15 renames the `entities` and `dirty` index and the `replica` key; the
+  SQLite read model moves to v3 (`entities.model`, `idx_entities_model`) and rebuilds from
+  the Action log; the replica record is format 5, now exported as
+  `REPLICA_RECORD_FORMAT`.
+
+- 2024699: One `ctx` port, declared where both sides already look.
+
+  The handler's port was declared twice — once in the SDK's typings and once in the runtime
+  that implements it — and the copies had drifted: the runtime grew `log` and `env`, the SDK
+  never heard of them. The port now lives in `@ebbjs/write`, with the verbs left open over
+  the entity name, so `@ebbjs/server`'s `Context<S>` narrows the names to the schema's
+  models and `@ebbjs/functions-runtime`'s `Context` adds `log` and `env`, and neither
+  restates a verb signature or an option shape. `RelationshipTarget`, `CreateOptions`,
+  `WriteOptions`, `UnrelateOptions`, `CommitOutcome`, `Caller`, and `CallerKind` live beside
+  it, re-exported where they were imported before.
+
+  `EntityResponse` moved with it, because `ctx.get`'s read shape is now part of that shared
+  port and the port cannot depend on the client that parses the same JSON. `@ebbjs/client`
+  still exports `EntityResponse` and `EntityResponseSchema`; only the definition's home
+  changed.
+
+  ```diff
+  -import type { Context } from "@ebbjs/server";
+  +import { createContext, type Context } from "@ebbjs/functions-runtime";
+  ```
+
+  `@ebbjs/runner` no longer depends on `@ebbjs/server`: its one use was that type.
+
+### Patch Changes
+
+- Updated dependencies [ded31b2]
+- Updated dependencies [fae4e88]
+- Updated dependencies [ed66062]
+- Updated dependencies [baf0bfd]
+- Updated dependencies [e30f842]
+- Updated dependencies [a682fe8]
+- Updated dependencies [c7fcfdf]
+- Updated dependencies [0c5c5d5]
+- Updated dependencies [437c80d]
+- Updated dependencies [dcd7063]
+- Updated dependencies [0b61d7c]
+- Updated dependencies [58835c6]
+  - @ebbjs/core@1.2.0
+  - @ebbjs/schema@1.2.0
+
 ## 1.1.0
 
 ### Minor Changes
