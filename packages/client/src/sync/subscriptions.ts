@@ -144,7 +144,10 @@ export type ChangeListener<TResult = unknown> = (
 export interface SubscriptionWriter<TResult = unknown> {
   /** The result the entry currently holds; `undefined` before the first. */
   readonly result: TResult | undefined;
-  /** The values this entry currently claims, one per row. */
+  /**
+   * The values this entry currently claims, one per row it touches: a source
+   * row or a joined target, which need not be a row of the result.
+   */
   readonly dependencies: readonly Dependency[];
   /** Publish the result this entry currently holds. */
   publish(result: TResult): void;

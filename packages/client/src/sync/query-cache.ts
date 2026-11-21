@@ -509,7 +509,7 @@ export const createQueryCache = (
     if (data === undefined) return false;
     const ids = patchableRows(run.reads, run.patchShape, changes);
     if (ids === null || ids.length === 0) return false;
-    let patched: readonly T[] | null;
+    let patched: unknown;
     try {
       patched = run.source.patch(ids);
     } catch {
@@ -517,13 +517,13 @@ export const createQueryCache = (
       // failure, so a broken patch path degrades to the run it replaced.
       return false;
     }
-    if (
-      patched === null ||
-      // SAFETY: only a `rows` result patches, and its `T` carries the id.
-      !oneRowPerId(ids, patched as readonly { readonly id: string }[])
-    ) {
-      return false;
-    }
+    // The seam is public and a plain-JS caller can answer anything. Only an
+    // array is a payload the splice can consume; anything else (`undefined`, a
+    // single row, a promise) declines rather than throwing out of the change
+    // listener, which would leave the entry serving stale data with no re-run.
+    if (!Array.isArray(patched)) return false;
+    // SAFETY: only a `rows` result patches, and its `T` carries the id.
+    if (!oneRowPerId(ids, patched as readonly { readonly id: string }[])) return false;
     // SAFETY: only a `rows` result patches, and its `T` is a projected row
     // carrying the id the splice matches on.
     const next = patchResultRows(

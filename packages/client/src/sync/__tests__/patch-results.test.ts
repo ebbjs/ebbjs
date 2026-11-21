@@ -680,6 +680,92 @@ describe("query cache: patch source contract (#942)", () => {
       String(candidate.data.fields.title?.value ?? ""),
     );
 
+  /**
+   * A source as an untyped caller may write it: `patch` answers whatever it
+   * likes, including a shape the type says cannot happen.
+   */
+  const malformedSource = (
+    replica: ReturnType<typeof createReplica>,
+    answer: (ids: readonly string[]) => unknown,
+  ): QuerySource<Entity> & { runs: number; patches: number } => {
+    const source = {
+      runs: 0,
+      patches: 0,
+      ready: async (): Promise<void> => {},
+      isReady: (): boolean => true,
+      execute: (): readonly Entity[] => {
+        source.runs += 1;
+        return replica.iterate("todo").filter((candidate) => candidate.deleted_hlc === null);
+      },
+      patch: (ids: readonly string[]): unknown => {
+        source.patches += 1;
+        return answer(ids);
+      },
+    };
+    // SAFETY: the point of this source is the answer the type forbids.
+    return source as unknown as QuerySource<Entity> & { runs: number; patches: number };
+  };
+
+  /**
+   * Drive one malformed answer through the seam: the source patches once, the
+   * cache declines, and the entry re-runs into the new value. Reports whether
+   * the registry had to swallow a listener throw on the way.
+   */
+  const declinedAnswer = async (
+    answer: (ids: readonly string[], replica: ReturnType<typeof createReplica>) => unknown,
+  ) => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One" });
+    const cache = createQueryCache(replica);
+    const source = malformedSource(replica, (ids) => answer(ids, replica));
+    const store = cache.watch("rows", todoQuery(), source);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const detach = store.subscribe(() => {});
+    try {
+      await flushTasks();
+      write(replica, { todo_1: "One!" });
+      return {
+        runs: source.runs,
+        patches: source.patches,
+        titles: titlesOf(store),
+        status: store.getSnapshot().status,
+        listenerThrows: errors.mock.calls.filter((args) =>
+          String(args[0]).includes("[Subscriptions] change listener threw:"),
+        ).length,
+      };
+    } finally {
+      errors.mockRestore();
+      detach();
+    }
+  };
+
+  it("re-runs when the patch answers undefined", async () => {
+    const result = await declinedAnswer(() => undefined);
+    expect(result.patches).toBe(1);
+    expect(result.runs).toBe(2);
+    expect(result.titles).toEqual(["One!"]);
+    expect(result.status).toBe("current");
+    expect(result.listenerThrows).toBe(0);
+  });
+
+  it("re-runs when the patch answers a single row instead of an array", async () => {
+    const result = await declinedAnswer((ids, replica) => reRead(replica)(ids)[0]);
+    expect(result.patches).toBe(1);
+    expect(result.runs).toBe(2);
+    expect(result.titles).toEqual(["One!"]);
+    expect(result.status).toBe("current");
+    expect(result.listenerThrows).toBe(0);
+  });
+
+  it("re-runs when the patch answers a promise", async () => {
+    const result = await declinedAnswer((ids, replica) => Promise.resolve(reRead(replica)(ids)));
+    expect(result.patches).toBe(1);
+    expect(result.runs).toBe(2);
+    expect(result.titles).toEqual(["One!"]);
+    expect(result.status).toBe("current");
+    expect(result.listenerThrows).toBe(0);
+  });
+
   it("re-runs when the patch answers fewer rows than it was handed", async () => {
     const replica = createReplica();
     write(replica, { todo_1: "One", todo_2: "Two" });
