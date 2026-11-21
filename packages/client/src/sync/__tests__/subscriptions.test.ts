@@ -8,7 +8,7 @@
  * the residency grace period — when the subscription ends.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   componentName,
   makeHlc,
@@ -128,22 +128,83 @@ describe("subscription registry: entries", () => {
 
   it("tracks a revision cursor per entry", () => {
     const { replica, subscriptions } = harness();
-    const relevant = subscriptions.open({
+    const lagging = subscriptions.open({
       kind: "query",
       key: "titles",
       reads: ["document/title"],
     });
     const other = subscriptions.open({ kind: "query", key: "notes", reads: ["note/*"] });
-    // The relevant entry's run is still in flight, so it has not caught up.
-    relevant.onChange(() => {});
-
     const before = replica.revision;
+    // A run in flight: the consumer declares that its result still reflects
+    // the revision it started from.
+    lagging.onChange((_changes, _revision) => lagging.seek(before));
+
     writeTitle(replica, "Renamed", 2);
 
-    // An untouched entry is dispatched past the batch without any work; the one
-    // whose result is outstanding stays behind until its run settles.
+    // Every live entry is dispatched through the batch, so an untouched one
+    // advances; the one whose result has not settled stays behind.
     expect(other.cursor).toBe(replica.revision);
-    expect(relevant.cursor).toBe(before);
+    expect(lagging.cursor).toBe(before);
+  });
+
+  it("isolates a throwing listener so its peers still see the batch", () => {
+    const { replica, subscriptions } = harness();
+    const throwing = subscriptions.open({
+      kind: "query",
+      key: "throwing",
+      reads: ["document/title"],
+    });
+    const peer = subscriptions.open({ kind: "row", row: "doc_1" });
+    const seen: Revision[] = [];
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    throwing.onChange(() => {
+      throw new Error("listener boom");
+    });
+    // A second listener on the same entry throws before the recorder, so one
+    // consumer cannot skip its neighbour either.
+    peer.onChange(() => {
+      throw new Error("listener boom");
+    });
+    peer.onChange((_changes, revision) => seen.push(revision));
+    const before = replica.revision;
+
+    writeTitle(replica, "Renamed", 2);
+
+    expect(seen).toEqual([replica.revision]);
+    // A throw cannot leave an entry behind for a later batch to jump past:
+    // the batch is dispatched through every live entry first.
+    expect(throwing.cursor).toBe(replica.revision);
+    expect(peer.cursor).toBe(replica.revision);
+    expect(before).toBeLessThan(replica.revision);
+    expect(reported).toHaveBeenCalled();
+    reported.mockRestore();
+  });
+
+  it("keeps a shared entry alive when one handle is released twice", async () => {
+    const { replica, subscriptions } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const first = subscriptions.open({ kind: "row", row: "doc_1" });
+    const second = subscriptions.open({ kind: "row", row: "doc_1" });
+    const seen: Revision[] = [];
+    second.onChange((_changes, revision) => seen.push(revision));
+    await flushTasks();
+    expect(subscriptions.entries()[0].refs).toBe(2);
+
+    first.release();
+    first.release();
+
+    const entry = subscriptions.entries()[0];
+    expect(entry.state).toBe("live");
+    expect(entry.refs).toBe(1);
+    // The peer's claims survive: releasing one handle twice is not a release
+    // of the other's.
+    expect(replica.stats().leases.leased).toBe(1);
+    writeTitle(replica, "Renamed", 2);
+    expect(seen).toEqual([replica.revision]);
+
+    second.release();
+    expect(subscriptions.stats().live).toBe(0);
+    expect(replica.stats().leases.leased).toBe(0);
   });
 
   it("releases an entry's leases on unsubscribe and starts the inactive TTL", async () => {
@@ -275,6 +336,37 @@ describe("subscription registry at the client seam", () => {
 
     offQuery();
     offRow();
+    expect(client.subscriptions.stats().live).toBe(0);
+  });
+
+  it("keeps a peer row subscription alive when one unsubscribe runs twice", async () => {
+    const client = mkClient();
+    await callApplyAction(
+      client,
+      put(1, "note_1", "note", { title: "Doc", body: "300 KB" }),
+      "grp_1",
+    );
+    const row = await client.note.get("note_1");
+    let peerFires = 0;
+    const off = row!.subscribe(() => {});
+    const offPeer = row!.subscribeAccessors(() => {
+      peerFires += 1;
+    });
+    expect(client.subscriptions.entries()[0].refs).toBe(2);
+
+    // A detach from React can run twice; the peer's share must survive it.
+    off();
+    off();
+
+    expect(client.subscriptions.stats().live).toBe(1);
+    await callApplyAction(
+      client,
+      put(2, "note_1", "note", { title: "Renamed", body: "300 KB" }),
+      "grp_1",
+    );
+    expect(peerFires).toBe(1);
+
+    offPeer();
     expect(client.subscriptions.stats().live).toBe(0);
   });
 

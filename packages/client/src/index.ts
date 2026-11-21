@@ -135,7 +135,6 @@ export {
   type QuerySurface,
 } from "./sync/query-cache";
 
-export type { ReplicaSignal } from "./sync/replica-signal";
 export {
   createSubscriptionRegistry,
   touchesReadSet,

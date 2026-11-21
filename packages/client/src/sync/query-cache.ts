@@ -366,6 +366,11 @@ export const createQueryCache = (
     const hadError = entry.error !== null;
     const startedStale = entry.snapshot.status === "stale";
     let publishedStale = false;
+    // The registry dispatches the batch through this entry, so the cursor is
+    // already at the batch revision. The visible result is still the one
+    // produced at `entry.revision`, and recording that lag keeps the status
+    // `stale` until `settle` advances the cursor to the revision it produced.
+    if (entry.revision !== null) entry.live?.subscription.seek(entry.revision);
     entry.running = true;
     refresh(entry);
 
@@ -466,7 +471,12 @@ export const createQueryCache = (
    * every entry re-runs.
    */
   const reconcile = <T>(entry: CacheEntry<T>, revision: Revision): void => {
-    if (entry.running) return;
+    if (entry.running) {
+      // The run in flight will settle against the current revision; until then
+      // the entry's result reflects the revision it started from.
+      if (entry.revision !== null) entry.live?.subscription.seek(entry.revision);
+      return;
+    }
     if (entry.data === undefined) {
       if (entry.refs === 0) return;
       if (entry.error !== null && isRelevant(entry, entry.revision ?? 0)) retry(entry);

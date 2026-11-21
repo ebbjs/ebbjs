@@ -104,7 +104,6 @@ import {
   scopeEvictedGroupIds,
   withRetainedRows,
 } from "./scope-eviction";
-import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { createSubscriptionRegistry, type SubscriptionRegistry } from "./subscriptions";
 import { backoffDelayMs } from "./backoff";
 import {
@@ -276,10 +275,9 @@ export class SyncClient<
   /** Read migrations for stored component versions (#804); absent without a schema. */
   readonly componentMigrations: ComponentMigrations | undefined;
   /**
-   * The engine signal over {@link replica} and its reactive query result
-   * cache (#512). Namespaces and hooks read query results through it, so a
-   * remount gets the cached result and every subscriber sees one invalidation
-   * stream. Hydrated with the replica.
+   * The reactive query result cache (#512) over {@link replica}. Namespaces and
+   * hooks read query results through it, so a remount gets the cached result and
+   * every subscriber sees one invalidation stream. Hydrated with the replica.
    */
   readonly queries: QueryCache;
   /**
@@ -289,12 +287,6 @@ export class SyncClient<
    * it read.
    */
   readonly subscriptions: SubscriptionRegistry;
-  /**
-   * The raw per-revision notification stream. Dispatch for the query cache and
-   * row watchers lives in {@link subscriptions}; this stays for callers that
-   * only want the batches.
-   */
-  readonly replicaSignal: ReplicaSignal;
   /**
    * Ephemeral presence: send on declared channels, read the peers observed on
    * the live stream (#677). Keyed by the registry passed to
@@ -503,8 +495,7 @@ export class SyncClient<
             migrations: opts.schema._migrations,
             versionOf: (id, component) => this.replica.componentVersion(id, component),
           });
-    this.replicaSignal = createReplicaSignal(this.replica);
-    this.subscriptions = createSubscriptionRegistry(this.replica, this.replicaSignal);
+    this.subscriptions = createSubscriptionRegistry(this.replica);
     this.queries = createQueryCache(this.replica, this.subscriptions, {
       ttlMs: opts.queryTtlMs,
     });

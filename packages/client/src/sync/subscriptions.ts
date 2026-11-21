@@ -9,13 +9,15 @@
  * share one resident value and one residency entry; releasing the last claim
  * starts the residency grace period and the value leaves when it elapses.
  *
- * The registry also owns the one dispatch loop: it reads the replica's journal
- * once per batch and hands each live entry the changes that touch it. Entries a
- * batch does not touch advance their cursor past it without work, and an entry
- * whose consumer has not caught up (an async run in flight) keeps its cursor
- * behind so a later journal gap is still visible. The scan over entries here is
- * what #938 replaces with dependency indices; the entry shape — read set, row,
- * cursor, dependencies — is what those indices are built from.
+ * The registry also owns the one dispatch loop: it subscribes to the replica
+ * once, reads the journal once per batch, and dispatches the batch through every
+ * live entry. The entry's cursor advances before its listeners run, so a
+ * listener that throws cannot leave the entry behind for a later batch to jump
+ * past; a throw is reported and never skips a peer. An entry whose result will
+ * lag — an async run in flight — declares it by seeking back to the revision
+ * its result reflects, so a later journal gap is still visible. The scan over
+ * entries here is what #938 replaces with dependency indices; the entry shape —
+ * read set, row, cursor, dependencies — is what those indices are built from.
  *
  * A consumer owns the meaning of its own result: a query entry publishes its
  * snapshot and depends on the rows it projected, a row entry is leased on the
@@ -32,7 +34,6 @@ import {
 import type { Replica, ReplicaChange, Release, Revision } from "@ebbjs/storage/replica";
 
 import { compileReadComponents, type CompiledReadComponents } from "./query-plan";
-import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 
 /** Registry-local sequence number; stable for the life of one entry. */
 export type SubscriptionId = number;
@@ -42,7 +43,8 @@ export type SubscriptionKind = "query" | "row";
 
 /**
  * `live` while the entry holds its claims; `terminal` once it has ended and
- * released them. A terminal handle is inert: every operation is a no-op.
+ * released them. A terminal handle is inert, and so is a released one: every
+ * operation after the handle's one release is a no-op.
  */
 export type SubscriptionState = "live" | "terminal";
 
@@ -86,7 +88,11 @@ export interface Subscription<TResult = unknown> {
   readonly row: string | null;
   /** The components this subscription reads: declared plus depended on. */
   readonly reads: ReadSet;
-  /** The revision this entry has been dispatched through. */
+  /**
+   * The revision this entry has been dispatched through. A consumer whose
+   * result still reflects an older revision (an async run in flight) seeks
+   * back to it, and advances it when the run settles.
+   */
   readonly cursor: Revision;
   /** The result the consumer last published; `undefined` before the first. */
   readonly result: TResult | undefined;
@@ -95,7 +101,11 @@ export interface Subscription<TResult = unknown> {
   readonly state: SubscriptionState;
   /** Subscribers sharing this entry. It ends when the last one releases. */
   readonly refs: number;
-  /** Drop a subscriber; the last one ends the entry and releases its claims. */
+  /**
+   * Drop this handle's subscriber; the last one ends the entry and releases its
+   * claims. Idempotent per handle, so one subscriber releasing twice cannot end
+   * an entry a peer still holds.
+   */
   release(): void;
   /** Publish the result this entry currently holds. */
   publish(result: TResult): void;
@@ -238,10 +248,7 @@ const declaredReads = (spec: SubscriptionSpec): readonly string[] =>
  * goes through this one table, so this is also the one place that dispatches a
  * change batch and the one place a read's leases are acquired and released.
  */
-export const createSubscriptionRegistry = (
-  replica: Replica,
-  signal: ReplicaSignal = createReplicaSignal(replica),
-): SubscriptionRegistry => {
+export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegistry => {
   const entries = new Map<string, Entry<unknown>>();
   let nextId = 0;
   let dispatcherCursor: Revision = replica.revision;
@@ -303,49 +310,58 @@ export const createSubscriptionRegistry = (
     void acquire(entry as unknown as Entry<unknown>, next, entry.generation);
   };
 
-  const handleOf = <TResult>(entry: Entry<TResult>): Subscription<TResult> => ({
-    id: entry.id,
-    kind: entry.kind,
-    key: entry.key,
-    row: entry.row,
-    get reads() {
-      return entry.reads;
-    },
-    get cursor() {
-      return entry.cursor;
-    },
-    get result() {
-      return entry.result;
-    },
-    get dependencies() {
-      return entry.dependencies;
-    },
-    get state() {
-      return entry.state;
-    },
-    get refs() {
-      return entry.refs;
-    },
-    release: () => {
-      if (entry.state !== "live") return;
-      entry.refs -= 1;
-      if (entry.refs <= 0) endEntry(entry);
-    },
-    publish: (result) => {
-      if (entry.state === "live") entry.result = result;
-    },
-    seek: (revision) => {
-      if (entry.state === "live") entry.cursor = revision;
-    },
-    depend: (dependencies) => depend(entry, dependencies),
-    onChange: (listener) => {
-      if (entry.state !== "live") return () => {};
-      entry.listeners.add(listener);
-      return () => {
-        entry.listeners.delete(listener);
-      };
-    },
-  });
+  const handleOf = <TResult>(entry: Entry<TResult>): Subscription<TResult> => {
+    /** One handle releases once: a peer's share is not this handle's to drop. */
+    let released = false;
+    const live = (): boolean => !released && entry.state === "live";
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      key: entry.key,
+      row: entry.row,
+      get reads() {
+        return entry.reads;
+      },
+      get cursor() {
+        return entry.cursor;
+      },
+      get result() {
+        return entry.result;
+      },
+      get dependencies() {
+        return entry.dependencies;
+      },
+      get state() {
+        return entry.state;
+      },
+      get refs() {
+        return entry.refs;
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        if (entry.state !== "live") return;
+        entry.refs -= 1;
+        if (entry.refs <= 0) endEntry(entry);
+      },
+      publish: (result) => {
+        if (live()) entry.result = result;
+      },
+      seek: (revision) => {
+        if (live()) entry.cursor = revision;
+      },
+      depend: (dependencies) => {
+        if (!released) depend(entry, dependencies);
+      },
+      onChange: (listener) => {
+        if (!live()) return () => {};
+        entry.listeners.add(listener);
+        return () => {
+          entry.listeners.delete(listener);
+        };
+      },
+    };
+  };
 
   /** Whether a batch touches an entry; the scan #938 replaces with indices. */
   const touchedBy = (entry: Entry<unknown>, changes: readonly ReplicaChange[]): boolean => {
@@ -377,16 +393,25 @@ export const createSubscriptionRegistry = (
         depend(entry, rowDependencies(replica, entry.row));
         if (entry.state !== "live") continue;
       }
-      if (!gap && !touchedBy(entry, changes)) {
-        entry.cursor = revision;
-        continue;
+      // The batch is dispatched through this entry before anyone runs: a
+      // listener that throws must not leave the entry behind for a later batch
+      // to advance past the change it missed.
+      entry.cursor = revision;
+      if (!gap && !touchedBy(entry, changes)) continue;
+      // A listener may detach a peer, so iterate a snapshot, and report a
+      // failure instead of letting one consumer skip the rest.
+      for (const listener of Array.from(entry.listeners)) {
+        try {
+          listener(changes, revision);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("[Subscriptions] change listener threw:", err);
+        }
       }
-      // A listener may detach a peer, so iterate a snapshot.
-      for (const listener of Array.from(entry.listeners)) listener(changes, revision);
     }
   };
 
-  const detach = signal.subscribe(() => dispatch());
+  const detach = replica.subscribe(() => dispatch());
 
   return {
     open<TResult>(spec: SubscriptionSpec): Subscription<TResult> {
