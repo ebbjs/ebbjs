@@ -928,6 +928,56 @@ describe("query cache: one inactive lifetime (#941)", () => {
       armed.mockRestore();
     }
   });
+
+  /**
+   * An inactive entry still carries the claim set of the result it published,
+   * not the set a fresh read would produce. A component the replica dropped
+   * while nobody was listening stays listed until the result re-runs, which is
+   * one dispatch and at most one extra run on remount — healing it on dispatch
+   * instead would be a re-run for a result nobody is reading.
+   */
+  it("keeps a dropped component claimed until the result re-runs, then heals", async () => {
+    const replica = createReplica({
+      readComponent: async () => null,
+      residencyTtlMs: 100,
+    });
+    ingest(replica, "todo", "todo_1");
+    write(replica, "todo_1", "todo", { notes: "paged out" });
+    const { cache, registry } = cacheOver(replica, 100);
+    const key = queryCacheKey("rows", todoQuery());
+    const source = sourceWith(() => {
+      const entity = replica.get("todo_1");
+      return entity === undefined ? [] : [entity];
+    });
+
+    const store = cache.watch("rows", todoQuery(), source);
+    const off = store.subscribe(() => {});
+    await waitFor(() => store.getSnapshot().status === "current");
+    off();
+
+    const claimed = (): readonly string[] =>
+      (registry.peek("query", key)?.dependencies ?? [])
+        .flatMap((dependency) => dependency.components)
+        .sort();
+    expect(claimed()).toEqual(["todo/notes", "todo/title"]);
+
+    // Dropped while the result is inactive: the result still reflects the
+    // value it read, so the entry keeps claiming it until that result re-runs.
+    detach(replica, "todo_1", "todo", "notes");
+    expect(registry.peek("query", key)?.state).toBe("inactive");
+    expect(claimed()).toEqual(["todo/notes", "todo/title"]);
+
+    const remount = cache.watch("rows", todoQuery(), source);
+    const offRemount = remount.subscribe(() => {});
+    await waitFor(() => remount.getSnapshot().status === "current");
+    await flushTasks();
+
+    // One re-run on remount, not one per stale claim, and the claim set now
+    // describes the result the new run published.
+    expect(source.runs).toBe(2);
+    expect(claimed()).toEqual(["todo/title"]);
+    offRemount();
+  });
 });
 
 describe("query cache: change-journal floor (#499)", () => {

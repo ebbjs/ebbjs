@@ -1,5 +1,6 @@
 ---
 "@ebbjs/client": minor
+"@ebbjs/storage": minor
 ---
 
 Merge the query cache and the residency TTLs into one inactive lifetime.
@@ -27,3 +28,9 @@ Breaking changes:
   carries the consumer state it was opened with.
 - A change listener receives the entry's writer as its fourth argument, so an
   inactive result can publish `stale` without holding a subscriber.
+
+For `@ebbjs/storage`: `@ebbjs/storage/replica` now exports `residencyTtlOf` and
+`unrefTimer`, the two decisions both stages of one residency lifetime read. The
+client's registry called its own copies of them, and a divergence would have let
+`0` or `NaN` mean different things for a result and for the values it claims.
+They are additive exports, not a behaviour change.

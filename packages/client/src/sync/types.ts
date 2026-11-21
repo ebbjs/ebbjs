@@ -243,8 +243,10 @@ export interface SyncClientOptions<
    * How long an unwatched read stays warm, in ms: one lifetime for both a
    * released component value and an inactive query result, which owns the
    * claims its result read until it ends. Defaults to
-   * `DEFAULT_RESIDENCY_TTL_MS` (60s). A non-positive or non-finite value keeps
-   * them until a later read claims them; a leased value is never released by
+   * `DEFAULT_RESIDENCY_TTL_MS` (60s). A non-positive or non-finite value
+   * disables expiry: a released value stays resident until a later read claims
+   * it, and an inactive result keeps both its result and its claims until a
+   * remount of the same read or `close()`. A leased value is never released by
    * the TTL.
    */
   residencyTtlMs?: number;

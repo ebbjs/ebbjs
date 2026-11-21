@@ -495,6 +495,56 @@ describe("subscription registry: inactive query results (#941)", () => {
       vi.useRealTimers();
     }
   });
+
+  /**
+   * `residencyTtlMs: 0` is the one disable switch, and it covers the query
+   * result exactly as it covers the values the result claims: no expiry, no
+   * timer. The session ends it, not the clock, which is why a result disabled
+   * this way keeps its claims until `close()`.
+   */
+  it("disables the inactive lifetime when residencyTtlMs is 0", async () => {
+    vi.useFakeTimers();
+    try {
+      const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+      await replica.read("doc_1", [LAZY]);
+      const query = subscriptions.open({
+        kind: "query",
+        key: "rows:document",
+        reads: ["document/*"],
+      });
+      query.depend([{ id: "doc_1", components: [LAZY] }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+      query.release();
+      expect(subscriptions.stats()).toMatchObject({ live: 0, inactive: 1 });
+      // The result still owns the claim while inactive, so the value cannot
+      // leave the replica behind it.
+      expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+      // No timer was armed, so no amount of time ends it.
+      await vi.advanceTimersByTimeAsync(DEFAULT_RESIDENCY_TTL_MS * 10);
+      expect(subscriptions.peek("query", "rows:document")).toBeDefined();
+      expect(replica.stats().leases.leased).toBe(1);
+
+      // Still claimable: a remount takes the same entry, and its claims, back.
+      const remount = subscriptions.open({
+        kind: "query",
+        key: "rows:document",
+        reads: ["document/*"],
+      });
+      expect(remount.state).toBe("live");
+      expect(subscriptions.entries()).toHaveLength(1);
+
+      // `close()` is what ends it, releasing the claims it owned.
+      subscriptions.close();
+      expect(remount.state).toBe("terminal");
+      expect(subscriptions.peek("query", "rows:document")).toBeUndefined();
+      expect(replica.stats().leases.leased).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("subscription registry: indexed dispatch (#938)", () => {

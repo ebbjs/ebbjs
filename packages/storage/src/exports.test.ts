@@ -41,6 +41,8 @@ describe("@ebbjs/storage subpaths", () => {
       "createReplica",
       "foldEntityAction",
       "holdAll",
+      "residencyTtlOf",
+      "unrefTimer",
     ]);
   }, 20_000);
 

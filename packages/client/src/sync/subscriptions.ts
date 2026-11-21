@@ -47,7 +47,8 @@
 
 import { componentModel, EBB_COMPONENTS, systemValueString } from "@ebbjs/core";
 import {
-  DEFAULT_RESIDENCY_TTL_MS,
+  residencyTtlOf,
+  unrefTimer,
   type LeaseTimerHandle,
   type Replica,
   type ReplicaChange,
@@ -231,10 +232,11 @@ export interface SubscriptionStats {
 export interface SubscriptionRegistryOptions {
   /**
    * How long a released query result stays warm: its result, its cursor, and
-   * the claims it owns. Defaults to {@link DEFAULT_RESIDENCY_TTL_MS}, the same
-   * one lifetime a released component value gets, so one answer covers both.
-   * A non-positive or non-finite value keeps an inactive result until a later
-   * read claims it.
+   * the claims it owns. Defaults to the storage package's
+   * `DEFAULT_RESIDENCY_TTL_MS` (60s), the same one lifetime a released
+   * component value gets, so one answer covers both. A non-positive or
+   * non-finite value disables expiry, so an inactive result keeps its result
+   * and its claims until a remount of the same read or `close()`.
    */
   readonly residencyTtlMs?: number;
 }
@@ -459,21 +461,6 @@ const declaredReads = (spec: SubscriptionSpec): readonly string[] =>
 const declaredSources = (spec: SubscriptionSpec): readonly string[] =>
   spec.kind === "query" ? (spec.sources ?? []) : [];
 
-/** `Infinity` disables retention, so no timer is armed at all. */
-const residencyTtlOf = (ttlMs: number | undefined): number => {
-  if (ttlMs === undefined) return DEFAULT_RESIDENCY_TTL_MS;
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return Number.POSITIVE_INFINITY;
-  return ttlMs;
-};
-
-/** A pending retention must not keep a Node process alive. */
-const unrefTimer = (timer: LeaseTimerHandle): void => {
-  if (typeof timer === "object" && timer !== null && "unref" in timer) {
-    const unref = (timer as { unref?: unknown }).unref;
-    if (typeof unref === "function") unref.call(timer);
-  }
-};
-
 /**
  * Build the registry over a live replica. Every query and row subscription goes
  * through this one table, so this is also the one place that dispatches a
@@ -493,7 +480,7 @@ export const createSubscriptionRegistry = (
   let nextId = 0;
   let closed = false;
 
-  const clearRetention = (entry: Entry<unknown>): void => {
+  const clearRetention = <TResult, TConsumer>(entry: Entry<TResult, TConsumer>): void => {
     entry.retentionGeneration += 1;
     if (entry.retentionTimer === null) return;
     clearTimeout(entry.retentionTimer);
@@ -502,7 +489,7 @@ export const createSubscriptionRegistry = (
 
   const endEntry = <TResult, TConsumer>(entry: Entry<TResult, TConsumer>): void => {
     if (entry.state === "terminal") return;
-    clearRetention(entry as unknown as Entry<unknown>);
+    clearRetention(entry);
     entry.state = "terminal";
     entry.generation += 1;
     const releases = entry.releases;
@@ -525,12 +512,15 @@ export const createSubscriptionRegistry = (
       endEntry(entry);
       return;
     }
+    // Clear before arming, so "one retention timer per entry" holds however the
+    // entry left `inactive` — a structural guarantee rather than a promise of
+    // every path. The bump also invalidates a callback already dispatched.
+    clearRetention(entry);
     entry.state = "inactive";
     // `residencyTtlMs: 0` disables expiry for the replica's values, so it
     // disables it for the result holding them too: no timer, live until a
     // remount takes it back.
     if (!Number.isFinite(residencyTtlMs)) return;
-    entry.retentionGeneration += 1;
     const generation = entry.retentionGeneration;
     const timer = setTimeout(() => {
       entry.retentionTimer = null;
@@ -577,7 +567,13 @@ export const createSubscriptionRegistry = (
 
   const depend = <TResult>(entry: Entry<TResult>, dependencies: readonly Dependency[]): void => {
     // An inactive result may still be settling a run it started while mounted;
-    // its claims follow the result it holds until the result ends.
+    // its claims follow the result it holds until the result ends. The list is
+    // the claim set of the result the entry still publishes, not a live
+    // dispatch set: a value the replica dropped while the entry was inactive
+    // stays listed until the result re-runs, costing one dispatch and at most
+    // one extra run on remount. Recomputing it here instead would be a re-run —
+    // the claim set is derived from a result, so only a new result can heal it —
+    // done for nobody while the entry is inactive.
     if (entry.state === "terminal") return;
     const next = mergeComponents(dependencies);
     if (sameDependencies(entry.dependencies, next)) return;
