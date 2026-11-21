@@ -128,7 +128,6 @@ export {
   type Selection,
   type QuerySelection,
   type StructuralReads,
-  rowReadComponentsFor,
   selectionReadComponents,
   structuralReads,
   queryCacheKey,

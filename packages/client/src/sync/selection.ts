@@ -102,13 +102,11 @@ export const selectionFieldKeys = <TFields extends Record<string, TSchema>>(
 /**
  * The components a read's selection leases before any predicate, order, or
  * join is added. A read with no selection reads its source whole; a value view
- * seeds the exact component it projects; `.select({})` names none.
+ * seeds the component it projects; `.select({})` names none, so it projects
+ * and leases nothing — the same rule the builder's page acquisition applies.
  */
 const selectionBase = (query: Query): readonly string[] => {
-  if (query.selected !== undefined) {
-    if (query.selected.components.length > 0) return query.selected.components;
-    return query.sourceComponents ?? [];
-  }
+  if (query.selected !== undefined) return query.selected.components;
   return query.sourceComponents ?? [`${query.source}/*`];
 };
 
@@ -127,9 +125,6 @@ export const selectionReadComponents = (query: Query): readonly string[] => {
   reads.add(EBB_COMPONENTS.membership);
   return [...reads];
 };
-
-/** The projected-row read set; the selection-aware replacement for whole-model reads. */
-export const rowReadComponentsFor = selectionReadComponents;
 
 /**
  * What a read depends on beyond component values: the models whose row set it

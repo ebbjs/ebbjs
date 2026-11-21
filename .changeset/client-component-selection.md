@@ -28,4 +28,6 @@ Breaking changes:
   (`snapshot` / `unloaded`) instead of a bare `EntitySnapshot`. A snapshot is
   the current projection, a tombstone included; `unloaded` names one released
   component, or omits the component when the row left the replica.
-- Two selections of one query are distinct cache entries.
+- Two selections of one query are distinct cache entries, and two selections of
+  one row are distinct subscriptions: each leases what it reads, and a released
+  component is reported once per reader.

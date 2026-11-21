@@ -49,7 +49,7 @@ import type { Replica, Revision } from "@ebbjs/storage/replica";
 
 import type { Query } from "./query";
 import { compileReadComponents, planQuery, type CompiledReadComponents } from "./query-plan";
-import { queryCacheKey, rowReadComponentsFor, structuralReads } from "./selection";
+import { queryCacheKey, selectionReadComponents, structuralReads } from "./selection";
 import {
   createSubscriptionRegistry,
   touchesReadSet,
@@ -161,10 +161,6 @@ interface LiveSubscription {
   readonly subscription: Subscription<QueryResult<unknown>>;
   readonly detach: () => void;
 }
-
-/** The cache key: surface plus the canonical lowered query, selection included. */
-export const queryKey = (surface: QuerySurface, query: Query): string =>
-  queryCacheKey(surface, query);
 
 const sameRows = (a: readonly unknown[], b: readonly unknown[]): boolean =>
   a.length === b.length && a.every((row, i) => structuralEqual(row, b[i]));
@@ -499,13 +495,13 @@ export const createQueryCache = (
 
   return {
     watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T> {
-      const key = queryKey(surface, query);
+      const key = queryCacheKey(surface, query);
       let entry = entries.get(key);
       if (entry === undefined) {
         // A collection result keeps ids, a projected row keeps the whole shape;
         // only the latter needs the source and joined models read whole.
         const readNames =
-          surface === "rows" ? rowReadComponentsFor(query) : planQuery(query).readComponents;
+          surface === "rows" ? selectionReadComponents(query) : planQuery(query).readComponents;
         const sources = structuralReads(query).rows;
         const created: CacheEntry<unknown> = {
           key,

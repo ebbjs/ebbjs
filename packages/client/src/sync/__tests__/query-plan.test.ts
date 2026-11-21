@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { emptyQuery, type Query } from "../query";
 import { compileReadComponents, planQuery, readComponentsFor } from "../query-plan";
-import { rowReadComponentsFor } from "../selection";
+import { selectionReadComponents } from "../selection";
 
 const query = (overrides: Partial<Query> & Pick<Query, "groups">): Query => ({
   ...emptyQuery("todo"),
@@ -29,7 +29,11 @@ describe("planQuery", () => {
     expect(plan.readComponents).toEqual(["todo/completed"]);
     // The projected-row read adds the source's whole model (no selection names
     // its fields) and membership for `groupIds`.
-    expect(rowReadComponentsFor(filtered)).toEqual(["todo/*", "todo/completed", "ebb/membership"]);
+    expect(selectionReadComponents(filtered)).toEqual([
+      "todo/*",
+      "todo/completed",
+      "ebb/membership",
+    ]);
   });
 
   it("pushes indexed predicates ahead of filters and records the read components", () => {
@@ -150,7 +154,7 @@ describe("planQuery", () => {
   it("adds membership to a projected row even when no predicate reads it", () => {
     const filtered = query({ groups: [[{ kind: "field", field: "status", value: "open" }]] });
 
-    expect(rowReadComponentsFor(filtered)).toContain("ebb/membership");
+    expect(selectionReadComponents(filtered)).toContain("ebb/membership");
   });
 
   it("adds each joined model whole to a projected row", () => {
@@ -174,7 +178,7 @@ describe("planQuery", () => {
     expect(plan.readComponents).toEqual(["issue/title", "ebb/link", "ebb/membership"]);
     // No selection: the source projects whole, then the plan's reads, then the
     // joined models (the membership join reads the group component).
-    expect(rowReadComponentsFor(joined)).toEqual([
+    expect(selectionReadComponents(joined)).toEqual([
       "issue/*",
       "issue/title",
       "ebb/link",
@@ -196,6 +200,6 @@ describe("planQuery", () => {
   it("reads nothing for a candidate chain", () => {
     const query = emptyQuery("");
     expect(readComponentsFor(query)).toEqual([]);
-    expect(rowReadComponentsFor(query)).toEqual([]);
+    expect(selectionReadComponents(query)).toEqual([]);
   });
 });

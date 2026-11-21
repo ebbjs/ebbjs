@@ -26,10 +26,17 @@ import {
 import { createClient } from "../client";
 import type { EntityEvent } from "../namespace";
 import type { Query } from "../query";
-import { queryKey } from "../query-cache";
-import { rowReadComponentsFor, selectionReadComponents, structuralReads } from "../selection";
+import { queryCacheKey, selectionReadComponents, structuralReads } from "../selection";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, flushTasks, jsonResponse, testActions, waitFor } from "../test-utils";
+import {
+  callApplyAction,
+  flushTasks,
+  jsonResponse,
+  platformEntity,
+  seedReplicaRow,
+  testActions,
+  waitFor,
+} from "../test-utils";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
@@ -270,7 +277,7 @@ describe("selection: system reads are planner-supplied", () => {
     const { client } = harness(schema);
     const selected = client.note.query().select({ title: true }).toQuery();
 
-    expect(rowReadComponentsFor(selected)).toEqual(["note/title", "ebb/membership"]);
+    expect(selectionReadComponents(selected)).toEqual(["note/title", "ebb/membership"]);
     expect(readSet(selected)).toEqual(["note/title", "ebb/membership"]);
     // `groupIds` is structural: the shape has no such field to select.
     expect(() => client.note.query().select({ groupIds: true } as never)).toThrow(/groupIds/);
@@ -300,6 +307,18 @@ describe("selection: system reads are planner-supplied", () => {
       .toQuery();
 
     expect(readSet(query)).toEqual(["note/title", "note/status", "ebb/membership"]);
+  });
+
+  it("projects nothing for an empty selection on a value view", () => {
+    const { client } = harness(schema);
+    const query = client.group.query().select({}).toQuery();
+
+    // A value view's component is the scan's seed, not a selected field: an
+    // empty selection names no component, the same rule the page acquisition
+    // follows. The plan still reads the view's component to know which rows
+    // exist, which is invalidation rather than projection.
+    expect(query.selected).toEqual({ fields: [], components: [] });
+    expect(selectionReadComponents(query)).toEqual(["ebb/group", "ebb/membership"]);
   });
 
   it("returns the issues in a group with groupIds present and no membership field", async () => {
@@ -470,7 +489,7 @@ describe("selection: joins lease their targets", () => {
 describe("selection: cache key", () => {
   it("gives two selections of the same query different cache keys", () => {
     const { client } = harness(schema);
-    const key = (query: Parameters<typeof queryKey>[1]) => queryKey("rows", query);
+    const key = (query: Parameters<typeof queryCacheKey>[1]) => queryCacheKey("rows", query);
 
     const title = key(client.note.query().select({ title: true }).toQuery());
     const titleAndStatus = key(client.note.query().select({ title: true, status: true }).toQuery());
@@ -529,6 +548,86 @@ describe("selection: row events", () => {
     detach();
   });
 
+  it("reports a released component once, never on a later batch", async () => {
+    const { client, written } = harness(schema);
+    const id = await createNote(client, written, {
+      title: "One",
+      status: "open",
+      body: "body",
+    });
+    const row = await client.note.get(id, { select: { title: true, status: true } });
+    const events: EntityEvent<never>[] = [];
+    const detach = row!.subscribe((event) => events.push(event as never));
+    await flushTasks();
+    const unloaded = () =>
+      events.filter((event) => event.type === "unloaded") as { component?: string }[];
+
+    await callApplyAction(client, droppedUpdate("a_drop", id, ["note/title", "note/status"]));
+    await flushTasks();
+    expect(
+      unloaded()
+        .map((event) => event.component)
+        .sort(),
+    ).toEqual(["note/status", "note/title"]);
+
+    // The claim set healed to what the replica still holds, so the release is
+    // not re-derived from a selection the entry no longer leases.
+    await updateNote(client, written, id, { updated_at: 1 });
+    await flushTasks();
+    expect(unloaded()).toHaveLength(2);
+
+    await updateNote(client, written, id, { updated_at: 2 });
+    await flushTasks();
+    expect(unloaded()).toHaveLength(2);
+
+    detach();
+  });
+
+  it("never reports a component the read never leased", async () => {
+    const { client, written } = harness(schema);
+    const id = await createNote(client, written, {
+      title: "One",
+      status: "open",
+      body: "body",
+    });
+    // The selected component's value is gone before the read opens, so the
+    // subscription never claims it and has no release to report.
+    await callApplyAction(client, droppedUpdate("a_body_drop", id, ["note/body"]));
+    const row = await client.note.get(id, { select: { body: true } });
+    const events: EntityEvent<never>[] = [];
+    const detach = row!.subscribe((event) => events.push(event as never));
+    await flushTasks();
+
+    await updateNote(client, written, id, { title: "Two" });
+    await flushTasks();
+    await updateNote(client, written, id, { title: "Three" });
+    await flushTasks();
+
+    expect(events.filter((event) => event.type === "unloaded")).toEqual([]);
+
+    detach();
+  });
+
+  it("reports a value view's missing component as an unloaded component", async () => {
+    const { client, storage } = harness(schema);
+    const group = platformEntity("g_1", "group", { name: "Demo", apps: ["notes"] });
+    seedReplicaRow(client.replica, group);
+    await storage.entities.set(group);
+    const row = await client.group.get("g_1");
+    const events: EntityEvent<never>[] = [];
+    const detach = row!.subscribe((event) => events.push(event as never));
+    await flushTasks();
+
+    await callApplyAction(client, droppedUpdate("a_group_drop", "g_1", ["ebb/group"]));
+    await flushTasks();
+
+    // The row is still here; the component the view projects is not. That is a
+    // component release, not the row leaving the replica.
+    expect(events).toEqual([{ type: "unloaded", id: "g_1", component: "ebb/group" }]);
+
+    detach();
+  });
+
   it("treats a tombstone as a snapshot", async () => {
     const { client, written } = harness(schema);
     const id = await createNote(client, written, {
@@ -569,6 +668,100 @@ describe("selection: row events", () => {
     expect(events).toEqual([{ type: "unloaded", id }]);
 
     detach();
+  });
+});
+
+describe("selection: row sharing", () => {
+  const rowEntries = (client: MountedClient<typeof schema>) =>
+    client.subscriptions.entries().filter((entry) => entry.kind === "row");
+
+  it("shares one entry per selection, not one per row", async () => {
+    const { client, written } = harness(schema);
+    const id = await createNote(client, written, {
+      title: "One",
+      status: "open",
+      body: "body",
+    });
+
+    const titleRow = (await client.note.get(id, { select: { title: true } }))!;
+    const first = titleRow.subscribe(() => {});
+    const second = titleRow.subscribe(() => {});
+    await flushTasks();
+    expect(rowEntries(client)).toHaveLength(1);
+    expect(rowEntries(client)[0].refs).toBe(2);
+
+    const statusRow = (await client.note.get(id, { select: { status: true } }))!;
+    const third = statusRow.subscribe(() => {});
+    await flushTasks();
+    expect(rowEntries(client)).toHaveLength(2);
+
+    first();
+    second();
+    third();
+  });
+
+  it("leases every reader's own selection of one row", async () => {
+    const { client, written } = harness(schema, { residencyTtlMs: 10 });
+    const id = await createNote(client, written, {
+      title: "One",
+      status: "open",
+      body: "body",
+    });
+
+    const titleRow = (await client.note.get(id, { select: { title: true } }))!;
+    const detachTitle = titleRow.subscribe(() => {});
+    await flushTasks();
+    expect(client.replicaStats.leases.byComponent["note/body"]).toBeUndefined();
+
+    const wholeRow = (await client.note.get(id))!;
+    const detachWhole = wholeRow.subscribe(() => {});
+    await flushTasks();
+
+    // The whole-row reader leases the body its own read names, even though the
+    // narrower read opened the row's entry first; otherwise the body would
+    // expire beneath it and project as a silent partial row.
+    expect(client.replicaStats.leases.byComponent["note/body"]).toMatchObject({ leased: 1 });
+
+    // Only the whole-row reader's release ends the body's residency: the
+    // narrower reader still holds its own selection.
+    detachWhole();
+    await waitFor(() => !client.replica.isComponentResident(id, "note/body"));
+    const [narrow] = rowEntries(client);
+    expect(narrow.state).toBe("live");
+    expect(narrow.dependencies).toEqual([{ id, components: ["note/title"] }]);
+
+    detachTitle();
+  });
+
+  it("reports each reader's release once", async () => {
+    const { client, written } = harness(schema);
+    const id = await createNote(client, written, {
+      title: "One",
+      status: "open",
+      body: "body",
+    });
+    const titleRow = (await client.note.get(id, { select: { title: true } }))!;
+    const narrow: EntityEvent<never>[] = [];
+    const detachNarrow = titleRow.subscribe((event) => narrow.push(event as never));
+    const wholeRow = (await client.note.get(id))!;
+    const whole: EntityEvent<never>[] = [];
+    const detachWhole = wholeRow.subscribe((event) => whole.push(event as never));
+    await flushTasks();
+
+    await callApplyAction(client, droppedUpdate("a_drop", id, ["note/title"]));
+    await flushTasks();
+    const unloadedOf = (events: readonly EntityEvent<never>[]) =>
+      events.filter((event) => event.type === "unloaded") as { component?: string }[];
+    expect(unloadedOf(narrow)).toEqual([{ type: "unloaded", id, component: "note/title" }]);
+    expect(unloadedOf(whole)).toEqual([{ type: "unloaded", id, component: "note/title" }]);
+
+    await updateNote(client, written, id, { status: "done" });
+    await flushTasks();
+    expect(unloadedOf(narrow)).toHaveLength(1);
+    expect(unloadedOf(whole)).toHaveLength(1);
+
+    detachNarrow();
+    detachWhole();
   });
 });
 

@@ -74,7 +74,10 @@ export interface Dependency {
   readonly components: readonly string[];
 }
 
-/** A subscription's identity: a query key (shared per query) or a row id. */
+/**
+ * A subscription's identity: a query key (shared per query) or a row id plus
+ * the components its read selected (shared per row selection).
+ */
 export type SubscriptionSpec =
   | {
       readonly kind: "query";
@@ -90,7 +93,10 @@ export type SubscriptionSpec =
     }
   | {
       readonly kind: "row";
-      /** The row this subscription reads; also the entry's sharing key. */
+      /**
+       * The row this subscription reads. Two selections of one row are two
+       * entries, so the row plus its selection is what they share by.
+       */
       readonly row: string;
       /**
        * The components the row read selected. Absent claims every resident
@@ -119,7 +125,10 @@ export type ChangeListener = (
 export interface SubscriptionSnapshot<TResult = unknown> {
   readonly id: SubscriptionId;
   readonly kind: SubscriptionKind;
-  /** The sharing key: the query key, or the row id. */
+  /**
+   * The sharing key: the query key, or the row id. Two row entries for one row
+   * select different components, so the row id alone does not identify one.
+   */
   readonly key: string;
   /** The row a row subscription reads; `null` for a query subscription. */
   readonly row: string | null;
@@ -212,15 +221,22 @@ export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean =
 const MEMBERSHIP_INDEX = "membership";
 
 /**
- * The values a row subscription claims: the components its read selected, or
- * every component the row carries when it selected nothing.
+ * The values a row subscription claims: the components its read selected that
+ * the replica holds, or every component the row carries when it selected
+ * nothing. A selected component that never arrived was never leased, so
+ * claiming it would invent a release the entry never held; deriving the claim
+ * set from residency is what keeps a release reportable exactly once.
  */
 const rowDependencies = (
   replica: Replica,
   row: string,
   selected?: readonly string[],
 ): readonly Dependency[] => {
-  const components = selected ?? replica.residentComponents(row);
+  const resident = replica.residentComponents(row);
+  const components =
+    selected === undefined
+      ? resident
+      : resident.filter((component) => selected.includes(component));
   const unique = [...new Set(components)];
   return unique.length === 0 ? [] : [{ id: row, components: unique }];
 };
@@ -323,8 +339,18 @@ interface Entry<TResult> {
   pending: number;
 }
 
+/**
+ * The selection's share of a row entry's key. Two reads of one row that select
+ * different components claim different values, so they must not share an entry:
+ * one lease set, one release report, per selection. Sorted, so the same
+ * selection shares whichever order it was declared in; absent (a whole-row
+ * read) is a key of its own.
+ */
+const rowSelectionKey = (components: readonly string[] | undefined): string =>
+  components === undefined ? "" : `\u0000[${[...components].sort().join(",")}]`;
+
 const registryKey = (spec: SubscriptionSpec): string =>
-  `${spec.kind}\u0000${spec.kind === "query" ? spec.key : spec.row}`;
+  `${spec.kind}\u0000${spec.kind === "query" ? spec.key : `${spec.row}${rowSelectionKey(spec.components)}`}`;
 
 const sharingKey = (spec: SubscriptionSpec): string =>
   spec.kind === "query" ? spec.key : spec.row;

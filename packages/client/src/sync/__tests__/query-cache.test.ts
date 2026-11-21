@@ -11,12 +11,12 @@ import { describe, expect, it } from "vitest";
 import { componentName, makeHlc, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
-import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
+import { createQueryCache, type QuerySource } from "../query-cache";
 import { EBB_COMPONENTS } from "@ebbjs/core";
 import { flushTasks, isPlatformModel, linkAction, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery } from "../query-plan";
-import { rowReadComponentsFor } from "../selection";
+import { queryCacheKey, selectionReadComponents } from "../selection";
 
 const todoQuery = (): Query => emptyQuery("todo");
 
@@ -172,7 +172,7 @@ const deferredSource = (): QuerySource<Entity> & {
   return source;
 };
 
-describe("queryKey", () => {
+describe("queryCacheKey", () => {
   it("is canonical over object key order and distinct per surface", () => {
     const a: Query = {
       source: "todo",
@@ -188,8 +188,8 @@ describe("queryKey", () => {
       groups: [[{ value: "open", field: "status", kind: "field" }]],
       source: "todo",
     };
-    expect(queryKey("rows", a)).toBe(queryKey("rows", b));
-    expect(queryKey("rows", a)).not.toBe(queryKey("collection", a));
+    expect(queryCacheKey("rows", a)).toBe(queryCacheKey("rows", b));
+    expect(queryCacheKey("rows", a)).not.toBe(queryCacheKey("collection", a));
   });
 
   it("distinguishes an undefined predicate value from an absent one", () => {
@@ -201,7 +201,7 @@ describe("queryKey", () => {
       ...emptyQuery("todo"),
       groups: [[{ kind: "field", field: "title" }]],
     } as unknown as Query;
-    expect(queryKey("rows", withUndefined)).not.toBe(queryKey("rows", absent));
+    expect(queryCacheKey("rows", withUndefined)).not.toBe(queryCacheKey("rows", absent));
   });
 });
 
@@ -535,7 +535,7 @@ describe("query cache: component-granular invalidation", () => {
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
     const cache = createQueryCache(replica);
     const query = statusQuery();
-    expect(rowReadComponentsFor(query)).toContain("todo/*");
+    expect(selectionReadComponents(query)).toContain("todo/*");
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", query, source);
     store.subscribe(() => {});

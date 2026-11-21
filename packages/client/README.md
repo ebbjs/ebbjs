@@ -60,10 +60,10 @@ the stale id cannot succeed. `resolveIdentity` throws
 
 `client.<entity>` is the schema-bound read API; a schema-bound client also
 carries the `client.group` / `client.membership` system namespaces, read-only
-like the rest. Reads go through `query()`; every write is an Action mounted as
-`client.actions.<name>`. The engine's single-row read (`get(id)`), its async row
-accessors, and the collection `subscribe(filter, cb)` are internal — they are
-not public read paths.
+like the rest. Reads go through `query()`, which takes a `select`; a single row
+is opened with `get(id, { select })`, taking the same selection. Every write
+is an Action mounted as `client.actions.<name>`. The async row accessors and the
+collection `subscribe(filter, cb)` are internal, not public read paths.
 
 ### Reads — `client.<entity>.query()`
 
@@ -82,6 +82,7 @@ membership index, so neither carries `groupIds`.
 ```typescript
 const issues = await client.issue
   .query()
+  .select({ title: true, status: true })
   .where("status", "open")
   .or("priority", "urgent")
   .orderBy("updated_at", "desc")
@@ -108,6 +109,13 @@ Grammar:
 - `with({ key: true, ... })` — one-level joins over the schema's relationships
   plus `groups`. Each selected key is merged onto the row; a nested selector
   is rejected.
+- `select({ field: true, ... })` — projects only the fields named. The same
+  declaration is the read's lease set and its invalidation key: a selected
+  field is returned, held, and watched, and a write to an unselected component
+  leaves the result alone. `.select({})` returns only the structural keys
+  (`id`, and `groupIds` on a query row). System components are never
+  selectable: `groupIds`, a predicate's or join's edge/membership reads, and a
+  joined target are supplied by the planner.
 
 Terminals: `await` / `.then()` for rows, `.first()`, `.count()`, `.exists()`,
 the async iterator, and `.toRaw()` for the untyped wire entities.
@@ -161,17 +169,29 @@ its grace period, and for how long, per component. The persisted replica record
 holds the held components only — a lazy component's existence survives in
 `notResident`, its value never does.
 
-A live subscription owns what it read: `row.subscribe` claims the row's
-components until it unsubscribes, and a query subscription claims the components
-its result read, so a component cannot expire under a mounted screen. Two
-subscriptions reading one component share one copy and one claim, and
+A live subscription owns what it read: `row.subscribe` claims the components its
+read selected until it unsubscribes, and a query subscription claims the
+components its result read, so a component cannot expire under a mounted screen.
+Two subscriptions reading one component share one copy and one claim, and
 unsubscribing starts the same grace period. `client.subscriptions` is the
-registry those live subscriptions live in.
+registry those live subscriptions live in. Two readers of one row that selected
+different components hold separate claims, so one cannot observe a partial row
+behind the other's lease.
 
-A query whose **source** type is on-demand is refused with
-`OnDemandQueryError`, because a scan is held-only. A held source may join an
-on-demand target: `with({ content: true })` reads the joined rows
-asynchronously before projecting them.
+A read that projects a component the replica does not hold is not refused. It
+narrows the ids first — scan, predicates, order, `limit` — and then acquires only
+the page it projects:
+
+```typescript
+// The ids narrow first; only the twenty documents `limit` names are acquired.
+const docs = await client.page_content.query().select({ content: true }).limit(20);
+```
+
+An unlimited projection is therefore a full read of the type — page it with
+`limit`. A single row is opened the same way, with
+`get(id, { select: { content: true } })`, and its `subscribe` keeps claiming the
+selected components. A join leases its target after the page is chosen:
+`with({ content: true })` acquires the joined rows before projecting them.
 
 ### Writes — actions
 

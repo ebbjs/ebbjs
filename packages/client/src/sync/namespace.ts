@@ -23,7 +23,6 @@ import {
   type Entity,
   type Unset,
 } from "@ebbjs/core";
-import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TRecord, TSchema, TString } from "@sinclair/typebox/type";
 
@@ -56,7 +55,7 @@ import { planQuery } from "./query-plan";
 import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";
 import type { QueryCache } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
-import type { ChangeListener, SubscriptionRegistry } from "./subscriptions";
+import type { SubscriptionRegistry } from "./subscriptions";
 import { selectionFieldKeys, type Selection } from "./selection";
 import {
   type AdjacencyReader,
@@ -701,8 +700,9 @@ const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
  * subscription claims the selected components until it is released.
  *
  * A snapshot is the current projection, a tombstone included. An `unloaded`
- * names a selected component the replica released, or the row itself when it
- * left the replica; a wrong-type row is skipped rather than reported.
+ * names a component the read leased that the replica released, or the row
+ * itself when it left the replica; a wrong-type row is skipped rather than
+ * reported.
  */
 const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   access: ReplicaAccess | null,
@@ -716,11 +716,7 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   components?: readonly string[] | null,
 ): (() => void) => {
   if (access === null) return () => {};
-  const fire = (
-    _changes: readonly ReplicaChange[],
-    _revision: Revision,
-    released: readonly string[],
-  ): void => {
+  const fire = (released: readonly string[]): void => {
     const row = access.replica.get(id);
     if (row === undefined) {
       cb({ type: "unloaded", id });
@@ -729,7 +725,9 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
     if (row.model !== entityName) return;
     const visible = visibleRow(row, view);
     if (visible === null) {
-      cb({ type: "unloaded", id });
+      // The row is here but the component a value view projects is not: that
+      // is a component release, not the row leaving.
+      if (view !== undefined) cb({ type: "unloaded", id, component: EBB_COMPONENTS[view] });
       return;
     }
     if (released.length > 0) {
@@ -760,11 +758,11 @@ const subscribeToAccessors = (
 const mountRowSubscription = (
   access: ReplicaAccess,
   id: string,
-  listener: ChangeListener,
+  listener: (released: readonly string[]) => void,
   components?: readonly string[],
 ): (() => void) => {
   const subscription = access.subscriptions.open({ kind: "row", row: id, components });
-  const detach = subscription.onChange(listener);
+  const detach = subscription.onChange((_changes, _revision, released) => listener(released));
   return () => {
     detach();
     subscription.release();
