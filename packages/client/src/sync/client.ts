@@ -44,7 +44,6 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import {
   applyUpdate,
   createReplica,
-  DEFAULT_PINNED_TTL_MS,
   type MaterializationPolicy,
   type Replica,
   type ReplicaStats,
@@ -482,7 +481,7 @@ export class SyncClient<
       materialization: residencyFromRegistry(this.registry),
       versions: { declared: (component) => this.registry.versionOf(component) },
       readComponent: (id, component) => this.readStoredComponent(id, component),
-      pinnedTtlMs: opts.pinnedTtlMs ?? DEFAULT_PINNED_TTL_MS,
+      residencyTtlMs: opts.residencyTtlMs,
     });
     this.componentMigrations =
       opts.schema?._migrations === undefined
@@ -2296,7 +2295,7 @@ export class SyncClient<
    * Only a row whose components are all held mirrors the replica. A row with
    * an on-demand component is partial in the replica (#802) and the store is
    * that component's read source, so the Update is applied to the stored row
-   * instead. A later `open` installs and pins the component, exactly as it
+   * instead. A later read installs and leases the component, exactly as it
    * would a row read back from the server.
    *
    * A subject the replica drops is normally left untouched — the shim

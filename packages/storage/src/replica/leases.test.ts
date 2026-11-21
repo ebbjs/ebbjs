@@ -96,6 +96,7 @@ describe("createLeaseTable", () => {
       resident: 1,
       timers: 0,
       oldestInactiveMs: 0,
+      byComponent: { "note/content": { leased: 1, inactive: 0, oldestInactiveMs: 0 } },
     });
 
     releaseA();
@@ -142,6 +143,7 @@ describe("createLeaseTable", () => {
       resident: 1,
       timers: 1,
       oldestInactiveMs: 0,
+      byComponent: { "note/content": { leased: 0, inactive: 1, oldestInactiveMs: 0 } },
     });
 
     advance(DEFAULT_RESIDENCY_TTL_MS);
@@ -171,6 +173,7 @@ describe("createLeaseTable", () => {
       resident: 1,
       timers: 0,
       oldestInactiveMs: 0,
+      byComponent: { "note/content": { leased: 1, inactive: 0, oldestInactiveMs: 0 } },
     });
 
     advance(DEFAULT_RESIDENCY_TTL_MS * 2);
@@ -207,6 +210,13 @@ describe("createLeaseTable", () => {
       resident: 1,
       timers: 0,
       oldestInactiveMs: DEFAULT_RESIDENCY_TTL_MS * 100,
+      byComponent: {
+        "note/content": {
+          leased: 0,
+          inactive: 1,
+          oldestInactiveMs: DEFAULT_RESIDENCY_TTL_MS * 100,
+        },
+      },
     });
   });
 
@@ -291,12 +301,16 @@ describe("createLeaseTable", () => {
     const keys = Array.from({ length: 1_000 }, (_, index) => content(`n_${index}`));
     const releases = keys.map((key) => leases.acquire(key));
 
-    expect(leases.stats()).toEqual({
+    expect(leases.stats()).toMatchObject({
       leased: 1_000,
       inactive: 0,
       resident: 1_000,
       timers: 0,
       oldestInactiveMs: 0,
+    });
+    // One bucket per component name, not per key.
+    expect(leases.stats().byComponent).toEqual({
+      "note/content": { leased: 1_000, inactive: 0, oldestInactiveMs: 0 },
     });
     expect(keys.every((key) => leases.isResident(key) && leases.refsOf(key) === 1)).toBe(true);
 
@@ -304,7 +318,7 @@ describe("createLeaseTable", () => {
     expect(leases.stats().resident).toBe(1_000);
 
     for (const release of releases) release();
-    expect(leases.stats()).toEqual({
+    expect(leases.stats()).toMatchObject({
       leased: 0,
       inactive: 1_000,
       resident: 1_000,
@@ -319,6 +333,7 @@ describe("createLeaseTable", () => {
       resident: 0,
       timers: 0,
       oldestInactiveMs: 0,
+      byComponent: {},
     });
   });
 
@@ -336,8 +351,72 @@ describe("createLeaseTable", () => {
 
     advance(500);
     expect(leases.stats().oldestInactiveMs).toBe(1_500);
+    // Each component keeps its own inactive age.
+    expect(leases.stats().byComponent).toEqual({
+      "note/content": { leased: 0, inactive: 1, oldestInactiveMs: 1_500 },
+      "note/title": { leased: 0, inactive: 1, oldestInactiveMs: 500 },
+    });
 
     leases.acquire(older);
     expect(leases.stats()).toMatchObject({ leased: 1, inactive: 1, oldestInactiveMs: 500 });
+  });
+
+  it("forgets a claim whose value the owner dropped", () => {
+    const expires = vi.fn();
+    const { leases, advance } = mkHarnessWith({ onExpire: expires });
+    const key = content();
+
+    leases.acquire(key)();
+    expect(leases.stats().timers).toBe(1);
+
+    leases.forget(key);
+
+    expect(leases.isResident(key)).toBe(false);
+    expect(leases.refsOf(key)).toBe(0);
+    expect(leases.stats()).toEqual({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+      timers: 0,
+      oldestInactiveMs: 0,
+      byComponent: {},
+    });
+    advance(DEFAULT_RESIDENCY_TTL_MS);
+    expect(expires).not.toHaveBeenCalled();
+  });
+
+  it("cannot expire a re-acquired value from a forgotten claim's timer", () => {
+    const { leases, advance } = mkHarness();
+    const key = content();
+    const release = leases.acquire(key);
+
+    leases.forget(key);
+    // The release that outlived the forget arms its own expiry; it must not
+    // free the value a later acquire is keeping.
+    release();
+    advance(500);
+    leases.acquire(key)();
+
+    advance(DEFAULT_RESIDENCY_TTL_MS / 2);
+    expect(leases.isResident(key)).toBe(true);
+
+    advance(DEFAULT_RESIDENCY_TTL_MS / 2);
+    expect(leases.isResident(key)).toBe(false);
+  });
+
+  it("rolls claims up per component, not per key", () => {
+    const { leases } = mkHarness();
+    const leased = title("n_1");
+    const inactive = title("n_2");
+    const other = content("n_3");
+
+    leases.acquire(leased);
+    leases.acquire(inactive)();
+    leases.acquire(other);
+
+    expect(leases.stats().byComponent).toEqual({
+      "note/title": { leased: 1, inactive: 1, oldestInactiveMs: 0 },
+      "note/content": { leased: 1, inactive: 0, oldestInactiveMs: 0 },
+    });
   });
 });

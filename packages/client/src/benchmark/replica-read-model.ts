@@ -5,7 +5,7 @@
  * the workspace shape from the epic #495 spike, so #503's numbers are
  * comparable with it: held metadata footprint, traversal cost (wall-clock and
  * rows touched), search over held pages, the one-pass projection build, and
- * the windowed body path.
+ * the on-demand body path.
  *
  * The replica is seeded directly: one `ReplicaRecord` is built in memory and
  * handed to `replica.load(record)`. Seeding through the memory adapter's
@@ -268,7 +268,9 @@ const measureHeap = (
 const loadOptions = {
   materialization: heldMetadata,
   readComponent: store.read,
-  pinnedTtlMs: 0,
+  // Disabled so a read stays warm for the whole sweep: every document below is
+  // read once, and a second read must not go back to the store.
+  residencyTtlMs: 0,
 } as const;
 
 const heapAccounts: HeapAccounts | null =
@@ -548,47 +550,49 @@ for (const searchCase of searchCases) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. On-demand bodies
+// 5. Leased bodies
 // ---------------------------------------------------------------------------
 
 const bodySample = workspace.bodyIds.slice(0, Math.min(100, workspace.bodyIds.length));
 const primaryBody = bodySample[0];
-if (primaryBody === undefined) throw new Error("fixture produced no windowed bodies");
-const bodyComponent = `${ON_DEMAND_TYPE}/content`;
+if (primaryBody === undefined) throw new Error("fixture produced no on-demand bodies");
+const bodyComponents = [`${ON_DEMAND_TYPE}/content`];
 
-// Warm the on-demand path so the first timed open is not JIT + first-read.
-for (const id of bodySample.slice(0, 3)) {
-  await replica.open(id, bodyComponent);
-  replica.close(id, bodyComponent);
-}
+// Warm the read path so the first timed read is not JIT + first-read.
+for (const id of bodySample.slice(0, 3)) await replica.read(id, bodyComponents);
 
-const openSamples: number[] = [];
-let openReads = 0;
+const readSamples: number[] = [];
+let coldReads = 0;
 for (const id of bodySample) {
-  replica.close(id, bodyComponent);
   store.reset();
   const start = performance.now();
-  const opened = await replica.open(id, bodyComponent);
-  openSamples.push(performance.now() - start);
-  openReads = Math.max(openReads, store.snapshot().calls);
-  replica.close(id, bodyComponent);
-  if (opened === null) throw new Error(`windowed body self-check: ${id} did not open`);
+  const loaded = await replica.read(id, bodyComponents);
+  readSamples.push(performance.now() - start);
+  coldReads = Math.max(coldReads, store.snapshot().calls);
+  if (loaded === null) throw new Error(`on-demand body self-check: ${id} did not read`);
 }
-const openMedian = median(openSamples);
+const readMedian = median(readSamples);
 
+// The warm path: a read inside the grace period installs nothing and reads
+// nothing, which is what a remount costs.
 store.reset();
-await replica.open(primaryBody, bodyComponent);
-const pinnedFirstReads = store.snapshot().calls;
-await replica.open(primaryBody, bodyComponent);
-const pinnedReReads = store.snapshot().calls - pinnedFirstReads;
-replica.close(primaryBody, bodyComponent);
-const bodiesResidentAfterRelease = replica.stats().byModel[ON_DEMAND_TYPE] ?? 0;
-if (openReads !== 1) throw new Error(`windowed body self-check: cold open read ${openReads} rows`);
-if (pinnedReReads !== 0) {
-  throw new Error(`windowed body self-check: a pinned re-open read ${pinnedReReads} rows`);
+await replica.read(primaryBody, bodyComponents);
+const warmReads = store.snapshot().calls;
+const bodiesResident = replica.stats().byModel[ON_DEMAND_TYPE] ?? 0;
+const bodyLeases = replica.stats().leases;
+if (coldReads !== 1) {
+  throw new Error(`on-demand body self-check: cold read touched ${coldReads} store rows`);
 }
-if (bodiesResidentAfterRelease !== 0) {
-  throw new Error(`windowed body self-check: ${bodiesResidentAfterRelease} bodies stayed resident`);
+if (warmReads !== 0) {
+  throw new Error(`on-demand body self-check: a warm read touched ${warmReads} store rows`);
+}
+if (bodiesResident < bodySample.length) {
+  throw new Error(
+    `on-demand body self-check: ${bodiesResident} of ${bodySample.length} bodies stayed resident`,
+  );
+}
+if (bodyLeases.leased !== 0) {
+  throw new Error(`on-demand body self-check: ${bodyLeases.leased} leases outlived their read`);
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +633,7 @@ const footprintRows: readonly (readonly [string, number, number])[] = [
   ["`membership` + `group`", workspace.counts.memberships + workspace.counts.groups, groupJson],
   ["**held metadata subtotal**", workspace.counts.heldRows, metadataJson],
   [
-    `\`${ON_DEMAND_TYPE}\` bodies (representative row × ${grouped(config.n)}, windowed)`,
+    `\`${ON_DEMAND_TYPE}\` bodies (representative row × ${grouped(config.n)}, on demand)`,
     config.n,
     bodyJson,
   ],
@@ -871,31 +875,35 @@ push(
   "",
 );
 
-// 5. On-demand bodies
+// 5. Leased bodies
 push(
-  "## 5. On-demand bodies",
+  "## 5. Leased bodies",
   "",
   `\`${ON_DEMAND_TYPE}\` is the schema's on-demand type: not held, so \`load\` drops it and`,
-  "`replica.open(id, component)` reads it through the store into a pin (`pinnedTtlMs: 0`).",
-  "Each open below follows a `close`, so every call is a cold read.",
+  "`replica.read(id, components)` reads it through the store under a lease",
+  "(`residencyTtlMs: 0` here, so a read stays warm for the whole sweep). Each document",
+  "below is read once, so every timed read is cold; a second read inside the grace",
+  "period is what a remount costs.",
   "",
   "| measure | value |",
   "| --- | ---: |",
-  `| distinct documents opened | ${grouped(bodySample.length)} |`,
-  `| cold open, median | ${usPerCall(openMedian)} |`,
-  `| cold open, min | ${usPerCall(minOf(openSamples))} |`,
-  `| cold open, max | ${usPerCall(maxOf(openSamples))} |`,
+  `| distinct documents read | ${grouped(bodySample.length)} |`,
+  `| cold read, median | ${usPerCall(readMedian)} |`,
+  `| cold read, min | ${usPerCall(minOf(readSamples))} |`,
+  `| cold read, max | ${usPerCall(maxOf(readSamples))} |`,
   `| body row size (JSON) | ${kb(workspace.bodyBytes)} |`,
-  `| store rows read per cold open | ${grouped(openReads)} |`,
-  `| store reads added by re-opening while pinned | ${grouped(pinnedReReads)} |`,
-  `| resident bodies while every sampled body is closed | ${grouped(bodiesResidentAfterRelease)} |`,
+  `| store rows read per cold read | ${grouped(coldReads)} |`,
+  `| store rows read by a warm re-read | ${grouped(warmReads)} |`,
+  `| resident bodies after the sweep | ${grouped(bodiesResident)} |`,
+  `| leases held by the sweep | ${grouped(bodyLeases.leased)} |`,
+  `| inactive bodies waiting out their grace period | ${grouped(bodyLeases.inactive)} |`,
   `| held bodies (\`heldByModel\`) | ${grouped(stats.heldByModel[ON_DEMAND_TYPE] ?? 0)} |`,
   "",
   "---",
   "",
   `_Harness runtime: ${fixed((performance.now() - harnessStart) / 1000, 1)} s from module start ` +
     `(fixture generation, ${HEAP_REPS} heap reps, ${LOAD_REPS} build reps, ${LATENCY_BATCHES} batches ` +
-    `per timed read, one windowed-body sweep)._`,
+    `per timed read, one on-demand body sweep)._`,
   "",
 );
 

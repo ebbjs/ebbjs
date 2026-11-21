@@ -3,15 +3,16 @@
  *
  * Metadata (page, relationship, membership) stays held in the replica. An
  * on-demand document's row exists as soon as its create arrives, with no
- * fields; its components are materialized only while it is open. A parent row
- * reaches its document through `row.body`; the document itself is read through
- * its own namespace's `get`, which pins it. `close` or the TTL releases the
- * components, and the body is never persisted as a replica row. A query
- * over an on-demand source is refused; a held source may join an on-demand
- * target, with the cached result going `stale` while the joined row loads.
+ * fields; its components are materialized only while a read leases them. A
+ * parent row reaches its document through `row.body`; the document itself is
+ * read through its own namespace's `get`, which leases the components it
+ * installs and releases them before returning. The value stays resident for one
+ * residency grace period and the body is never persisted as a replica row. A
+ * query over an on-demand source is refused; a held source may join an
+ * on-demand target, reading the joined row before projecting it.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   decodeSync,
   makeHlc,
@@ -110,14 +111,7 @@ const pageSchema = defineSchema({
   version: 1,
 });
 const bodyDocModel = "page_body";
-const bodyComponents = ["page_body/content"] as const;
-
-const closeBody = (
-  client: { replica: { close(id: string, component: string): void } },
-  id: string,
-): void => {
-  for (const component of bodyComponents) client.replica.close(id, component);
-};
+const bodyComponent = "page_body/content";
 
 let seededDocument = 0;
 
@@ -236,63 +230,65 @@ describe("on-demand document residency", () => {
     // A create makes the body row present with the create's facts and no
     // fields; which components the replica holds is residency, not existence.
     expect(client.replicaStats.byModel[bodyDocModel]).toBe(1);
-    const body = client.replica.get(bodyId);
-    expect(body?.exists).toBe(true);
-    expect(body?.model).toBe(bodyDocModel);
-    expect(body?.created_hlc).not.toBeNull();
-    expect(Object.keys(body?.data.fields ?? {})).toEqual([]);
+    const created = client.replica.get(bodyId);
+    expect(created?.exists).toBe(true);
+    expect(created?.model).toBe(bodyDocModel);
+    expect(created?.created_hlc).not.toBeNull();
+    expect(Object.keys(created?.data.fields ?? {})).toEqual([]);
     expect(client.replicaStats.heldByModel[bodyDocModel]).toBeUndefined();
     expect(client.replicaStats.nonResidentComponents).toMatchObject({
       "page_body/content": 1,
     });
 
     // Reading a body component still needs the residency path.
-    const open = await client.page_body.get(bodyId);
-    expect(textOf(open!.content ?? {})).toBe("hello");
-    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
+    const body = await client.page_body.get(bodyId);
+    expect(textOf(body!.content ?? {})).toBe("hello");
+    expect(client.replica.isComponentResident(bodyId, bodyComponent)).toBe(true);
 
     const parent = await client.page.get(pageId);
     expect((await parent!.body)!.id).toBe(bodyId);
   });
 
-  it("opens a body through its namespace, pinning it, and releases it on close", async () => {
-    const { client, written } = harness(pageSchema, { pinnedTtlMs: 0 });
+  it("leases a body through its namespace and leaves it warm for the grace period", async () => {
+    const { client, written } = harness(pageSchema, { residencyTtlMs: 0 });
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
     const body = await client.page_body.get(bodyId);
 
     expect(textOf(body!.content ?? {})).toBe("hello");
-    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
     expect(client.replica.get(bodyId)).toBeDefined();
-    expect(client.replicaStats.pinned).toBe(1);
-
-    closeBody(client, bodyId);
-
-    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(false);
-    expect(client.replica.get(bodyId)).toBeUndefined();
-    expect(client.replicaStats.pinned).toBe(0);
+    // The read released its claim before projecting, so nothing holds a lease
+    // and the value stays resident on the grace period alone.
+    expect(client.replicaStats.leases).toMatchObject({
+      leased: 0,
+      inactive: 1,
+      resident: 1,
+      byComponent: { "page_body/content": { leased: 0, inactive: 1 } },
+    });
   });
 
-  it("keeps a closed body cached until its TTL, then releases it", async () => {
-    const { client, written } = harness(pageSchema, { pinnedTtlMs: 10 });
+  it("releases a read body once its grace period elapses, journaling nothing", async () => {
+    const { client, written } = harness(pageSchema, { residencyTtlMs: 10 });
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
     await client.page_body.get(bodyId);
-    closeBody(client, bodyId);
-
-    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(false);
     expect(client.replica.get(bodyId)).toBeDefined();
+    const revision = client.replica.revision;
 
     await waitFor(() => client.replica.get(bodyId) === undefined);
-    expect(client.replicaStats.pinned).toBe(0);
+
+    // Expiry is a residency event: no content change, no journal entry.
+    expect(client.replica.revision).toBe(revision);
+    expect(client.replica.changesSince(revision)).toEqual([]);
+    expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
   });
 
-  it("persists held rows only, never an opened body", async () => {
+  it("persists held rows only, never a read body", async () => {
     const { client, storage, written } = harness(pageSchema);
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
 
     await client.page_body.get(bodyId);
-    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
+    expect(client.replica.isComponentResident(bodyId, bodyComponent)).toBe(true);
 
     await client.persistReplica();
 
@@ -333,8 +329,8 @@ describe("residency per component", () => {
       }),
     );
 
-  it("holds the metadata components and windows only the body", async () => {
-    const { client } = harness(noteSchema, { pinnedTtlMs: 0 });
+  it("holds the metadata components and leases only the body", async () => {
+    const { client } = harness(noteSchema, { residencyTtlMs: 0 });
     await seedNote(client);
 
     expect(Object.keys(client.replica.get(noteId)?.data.fields ?? {}).sort()).toEqual([
@@ -353,12 +349,23 @@ describe("residency per component", () => {
     const row = await client.note.get(noteId);
     expect(row?.body).toBe("300 KB body");
     expect(client.replica.get(noteId)?.data.fields.body).toBeDefined();
-    expect(client.replica.isOpen(noteId, "note/body")).toBe(true);
+    expect(client.replicaStats).toMatchObject({
+      residentComponents: 4,
+      nonResident: 0,
+      leases: { leased: 0, inactive: 1, byComponent: { "note/body": { leased: 0 } } },
+    });
+  });
 
-    client.replica.close(noteId, "note/body");
-    expect(client.replica.get(noteId)?.data.fields.body).toBeUndefined();
+  it("releases the body after its grace period and keeps the metadata row", async () => {
+    const { client } = harness(noteSchema, { residencyTtlMs: 10 });
+    await seedNote(client);
+    await client.note.get(noteId);
+    expect(client.replica.isComponentResident(noteId, "note/body")).toBe(true);
+
+    await waitFor(() => client.replica.get(noteId)?.data.fields.body === undefined);
+
     expect(client.replica.components("note/body")).toEqual([noteId]);
-    expect(client.replicaStats).toMatchObject({ nonResident: 1, pinned: 0 });
+    expect(client.replicaStats).toMatchObject({ nonResident: 1, residentComponents: 3 });
   });
 
   it("keeps the lazy value in the local store when the replica mirrors a write", async () => {
@@ -396,7 +403,7 @@ describe("a row with more on-demand components than the old window", () => {
   const lazyNoteId = "lazy_note_1";
 
   it("returns every component the read opened", async () => {
-    const { client } = harness(lazyNoteSchema, { pinnedTtlMs: 0 });
+    const { client } = harness(lazyNoteSchema, { residencyTtlMs: 0 });
     await callApplyAction(client, put(1, lazyNoteId, "lazy_note", values));
 
     const row = await client.lazy_note.get(lazyNoteId);
@@ -407,7 +414,50 @@ describe("a row with more on-demand components than the old window", () => {
         (field) => !client.replica.isComponentResident(lazyNoteId, `lazy_note/${field}`),
       ),
     ).toEqual([]);
-    expect(client.replicaStats.pinned).toBe(20);
+    // Twenty leases, one grace period: no cap trimmed the earliest reads.
+    expect(client.replicaStats.leases).toMatchObject({
+      leased: 0,
+      inactive: 20,
+      resident: 20,
+    });
+    expect(Object.keys(client.replicaStats.leases.byComponent)).toHaveLength(20);
+  });
+});
+
+describe("a row with three on-demand components", () => {
+  const lazyNote = defineModel("lazy_note", {
+    title: defineComponent("lazy_note/title", e.string(), { loading: "lazy" }),
+    body: defineComponent("lazy_note/body", e.string(), { loading: "lazy" }),
+    appendix: defineComponent("lazy_note/appendix", e.string(), { loading: "lazy" }),
+  });
+  const lazyNoteSchema = defineSchema({ models: { lazy_note: lazyNote }, version: 1 });
+  const lazyNoteId = "lazy_note_1";
+
+  it("returns all three after all three are read", async () => {
+    const { client } = harness(lazyNoteSchema, { residencyTtlMs: 0 });
+    await callApplyAction(
+      client,
+      put(1, lazyNoteId, "lazy_note", {
+        title: "One",
+        body: "300 KB body",
+        appendix: "1 MB appendix",
+      }),
+    );
+
+    const row = await client.lazy_note.get(lazyNoteId);
+
+    expect(row).toMatchObject({
+      id: lazyNoteId,
+      title: "One",
+      body: "300 KB body",
+      appendix: "1 MB appendix",
+    });
+    expect(
+      ["title", "body", "appendix"].map((field) =>
+        client.replica.isComponentResident(lazyNoteId, `lazy_note/${field}`),
+      ),
+    ).toEqual([true, true, true]);
+    expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 3, resident: 3 });
   });
 });
 
@@ -467,8 +517,8 @@ describe("held source with an on-demand join", () => {
     await callApplyAction(client, link(3, "page_1", "content", "page", "page_content_1"));
   };
 
-  it("loads the joined row before projecting and shows stale then current on a re-run", async () => {
-    const { client, storage } = harness(joinSchema, { pinnedTtlMs: 0 });
+  it("reads the joined row before projecting, without journaling the read", async () => {
+    const { client } = harness(joinSchema, { residencyTtlMs: 0 });
     await seed(client);
 
     const store = client.page.query().with({ content: true }).result();
@@ -478,36 +528,17 @@ describe("held source with an on-demand join", () => {
     const joined = (): { id: string; text: string } | null | undefined =>
       store.getSnapshot().data?.[0]?.content as { id: string; text: string } | null | undefined;
     expect(joined()).toMatchObject({ id: "page_content_1", text: "body" });
-    expect(client.replica.isOpen("page_content_1", "page_content/text")).toBe(true);
+    expect(client.replica.isComponentResident("page_content_1", "page_content/text")).toBe(true);
 
-    const contentRow = await storage.entities.get("page_content_1");
-    expect(contentRow).not.toBeNull();
-    const realGet = storage.entities.get.bind(storage.entities);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const getSpy = vi.spyOn(storage.entities, "get").mockImplementation(async (id: string) => {
-      if (id !== "page_content_1") return realGet(id);
-      await gate;
-      return contentRow;
-    });
-
-    // Closing the pin evicts the joined row, so the cached result re-runs and
-    // must load it again. The load stays pending until the gate opens.
-    client.replica.close("page_content_1", "page_content/text");
+    // The joined body was installed by a read: residency, not content, so the
+    // cached result has no reason to re-run.
+    const revision = client.replica.revision;
     await flushTasks();
-
-    expect(store.getSnapshot().status).toBe("stale");
-    // The stale result stays usable while the load is in flight.
+    expect(store.getSnapshot().status).toBe("current");
     expect(joined()).toMatchObject({ id: "page_content_1", text: "body" });
+    expect(client.replica.revision).toBe(revision);
+    expect(client.replica.changesSince(revision)).toEqual([]);
 
-    release();
-    await waitFor(() => store.getSnapshot().status === "current");
-    expect(joined()).toMatchObject({ id: "page_content_1", text: "body" });
-    expect(client.replica.isOpen("page_content_1", "page_content/text")).toBe(true);
-
-    getSpy.mockRestore();
     unsubscribe();
   });
 });

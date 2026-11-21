@@ -45,6 +45,7 @@ import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
+import { createLeaseTable, type LeaseKey, type LeaseTable } from "./leases";
 import type {
   MaterializationPolicy,
   MembershipQuery,
@@ -61,7 +62,6 @@ export const holdAll: MaterializationPolicy = {
 };
 
 export const DEFAULT_JOURNAL_CAPACITY = 1024;
-export const DEFAULT_PINNED_TTL_MS = 30_000;
 
 /**
  * A journal that retains everything is `Infinity`, so the trimmer never finds
@@ -72,34 +72,6 @@ const journalCapacityOf = (capacity: number | undefined): number => {
   if (!Number.isFinite(capacity) || capacity <= 0) return Number.POSITIVE_INFINITY;
   return Math.max(1, Math.floor(capacity));
 };
-
-/** `Infinity` disables TTL release, so no timer is armed at all. */
-const pinnedTtlOf = (ttlMs: number | undefined): number => {
-  if (ttlMs === undefined) return DEFAULT_PINNED_TTL_MS;
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return Number.POSITIVE_INFINITY;
-  return ttlMs;
-};
-
-/** A pending pin must not keep a Node process alive. */
-const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
-  if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
-    timer.unref();
-  }
-};
-
-/** `(entity, component)` is the pin key; the separator cannot occur in either. */
-const PIN_SEPARATOR = "\u0000";
-const pinKey = (id: string, component: string): string => `${id}${PIN_SEPARATOR}${component}`;
-const pinIdOf = (key: string): string => key.slice(0, key.indexOf(PIN_SEPARATOR));
-const pinComponentOf = (key: string): string => key.slice(key.indexOf(PIN_SEPARATOR) + 1);
-/** The row a pin key or a whole-row open key addresses. */
-
-interface Pin {
-  /** Whether the component is currently open; a closed pin waits out its TTL. */
-  open: boolean;
-  /** `null` while open, or when TTL release is disabled. */
-  timer: ReturnType<typeof setTimeout> | null;
-}
 
 interface OptimisticWrite {
   readonly actionId: string;
@@ -138,8 +110,8 @@ interface Snapshot {
  * `modelIndex` indexes the base by model; `iterate` layers the overlay's model
  * overrides on top of it. `componentIndex` tracks the composed view's component
  * set alongside the adjacency indices, and is likewise derived rather than
- * persisted. Pins are keyed `(entity, component)`, so an on-demand component is
- * fetched, evicted and TTL-released on its own.
+ * persisted. The lease table is keyed `(entity, component)`, so an on-demand
+ * component is fetched, evicted and released on its own.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const policy = options?.materialization ?? holdAll;
@@ -157,14 +129,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
   const journalCapacity = journalCapacityOf(options?.journalCapacity);
-  const pinnedTtlMs = pinnedTtlOf(options?.pinnedTtlMs);
-  const pins = new Map<string, Pin>();
-  const inFlightOpens = new Map<string, Promise<Entity | null>>();
-  /** Cancels a cold read whose component was closed or evicted while it was loading. */
-  const openEpochs = new Map<string, number>();
-  let nextOpenEpoch = 0;
+  /**
+   * A read claims the components it materializes, so a value is never dropped
+   * while a caller is installing it, and a released value stays warm for one
+   * grace period. Replaced wholesale by `load`, which drops every value.
+   */
+  let leases: LeaseTable = createLeaseTable({
+    residencyTtlMs: options?.residencyTtlMs,
+    onExpire: (key) => dropResidentValue(key),
+  });
+  /** Cold reads in flight, per row then component, shared by concurrent readers. */
+  const inFlightReads = new Map<string, Map<string, Promise<void>>>();
+  /** Cancels a cold read whose row left the replica while it was loading. */
+  const readEpochs = new Map<string, Map<string, number>>();
+  let nextReadEpoch = 0;
   /** Updates that landed for a row while a cold read was in flight. */
-  const pendingOpens = new Map<string, OrphanUpdate[]>();
+  const pendingWrites = new Map<string, OrphanUpdate[]>();
   /**
    * Components observed on a row before the row became resident. A lazy
    * component's value is not retained, but its existence has to survive until a
@@ -231,55 +211,41 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return [...components];
   };
 
-  const pinsOf = (id: string): readonly string[] => {
-    const keys: string[] = [];
-    for (const key of pins.keys()) {
-      if (pinIdOf(key) === id) keys.push(key);
-    }
-    return keys;
-  };
-
-  const hasOpenInFlight = (id: string): boolean => {
-    for (const key of inFlightOpens.keys()) {
-      if (pinIdOf(key) === id) return true;
-    }
-    return false;
-  };
+  /** Whether a lease still claims `component`'s value for `id`. */
+  const claimed = (id: string, component: string): boolean =>
+    leases.isResident({ entityId: id, component });
 
   /**
-   * A row is resident iff any of its components is held, or the row is pinned.
-   * A row that carries no component has nothing to retain, so it stays.
+   * A row is resident iff any of its components is held or claimed. A row that
+   * carries no component has nothing to retain, so it stays.
    */
   const resident = (id: string, row: Entity): boolean => {
     const components = presenceOfRow(id, row);
     if (components.length === 0) return true;
-    if (pinsOf(id).length > 0) return true;
-    return components.some(holds);
+    return components.some((component) => holds(component) || claimed(id, component));
   };
 
-  const cancelOpen = (key: string): void => {
-    if (!inFlightOpens.has(key)) return;
-    inFlightOpens.delete(key);
-    pendingOpens.delete(pinIdOf(key));
-    openEpochs.set(key, ++nextOpenEpoch);
+  const hasReadInFlight = (id: string): boolean => {
+    const reads = inFlightReads.get(id);
+    return reads !== undefined && reads.size > 0;
   };
 
-  const cancelOpensFor = (id: string): void => {
-    for (const key of inFlightOpens.keys()) {
-      if (pinIdOf(key) === id) cancelOpen(key);
+  const cancelReadsFor = (id: string): void => {
+    const reads = inFlightReads.get(id);
+    if (reads === undefined) {
+      pendingWrites.delete(id);
+      return;
     }
-    pendingOpens.delete(id);
+    let epochs = readEpochs.get(id);
+    if (epochs === undefined) readEpochs.set(id, (epochs = new Map()));
+    for (const component of reads.keys()) epochs.set(component, ++nextReadEpoch);
+    inFlightReads.delete(id);
+    pendingWrites.delete(id);
   };
 
-  const dropPin = (key: string): void => {
-    const pin = pins.get(key);
-    if (pin === undefined) return;
-    if (pin.timer !== null) clearTimeout(pin.timer);
-    pins.delete(key);
-  };
-
-  const dropPinsFor = (id: string): void => {
-    for (const key of pinsOf(id)) dropPin(key);
+  /** Drop every read in flight, so no result lands in a replaced view. */
+  const cancelAllReads = (): void => {
+    for (const id of inFlightReads.keys()) cancelReadsFor(id);
   };
 
   /** Remember a component exists without holding its value. */
@@ -384,7 +350,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const fields: Record<string, FieldValue> = {};
     for (const [field, value] of Object.entries(row.data.fields)) {
       const component = fieldComponent(row.model, field);
-      if (holds(component) || pins.has(pinKey(id, component))) {
+      if (holds(component) || claimed(id, component)) {
         fields[field] = value;
       } else {
         changed = true;
@@ -392,15 +358,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
     }
     return changed ? { ...row, data: { fields } } : row;
-  };
-
-  /** Drop pins that the composed view no longer justifies: absent or now held. */
-  const dropStalePins = (id: string, components: readonly string[]): void => {
-    const present = new Set(components);
-    for (const key of pinsOf(id)) {
-      const component = pinComponentOf(key);
-      if (!present.has(component) || holds(component)) dropPin(key);
-    }
   };
 
   /** Record the version an explicit component write materializes at. */
@@ -424,8 +381,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // The local store row is read asynchronously; keep updates that land while
     // that read is in flight so the install replays them instead of hiding
     // them behind a snapshot taken before they arrived.
-    if (hasOpenInFlight(id)) {
-      bufferUpdate(pendingOpens, { update, gsn, hlc, position });
+    if (hasReadInFlight(id)) {
+      bufferUpdate(pendingWrites, { update, gsn, hlc, position });
       return;
     }
 
@@ -439,10 +396,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
       if (update.method !== "delete") {
         const component = update.component;
-        const residentComponent = holds(component) || pins.has(pinKey(id, component));
+        const residentComponent = holds(component) || claimed(id, component);
         if (!residentComponent) {
           if (previous === null) {
-            // A component the policy does not hold and no pin covers is not
+            // A component the policy does not hold and no lease covers is not
             // retained. Its existence is all the replica remembers until a held
             // component makes the row resident.
             forgetVersion(id, component);
@@ -528,9 +485,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   /**
    * Every derived index tracks the composed view, so they must be reconciled
-   * wherever that view changes — which is why this hangs off `resync`, the
-   * one place every base, overlay, drop and tombstone write already funnels
-   * through.
+   * wherever that view changes — which is why `publish` is the one place a
+   * settled view reaches them.
    */
   const reconcileIndex = (previous: Snapshot, next: Snapshot): void => {
     const before = previous.row ?? undefined;
@@ -543,6 +499,50 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (delta !== null) componentIndex = applyComponentDelta(componentIndex, delta);
   };
 
+  /** The base row with the overlay's optimistic writes folded on, if any. */
+  const compose = (id: string): { next: Entity | null; overlaid: boolean } => {
+    const writes = overlay.get(id) ?? [];
+    let next = entities.get(id) ?? null;
+    for (const write of writes) {
+      next = applyUpdate(next, write.update, 0, write.hlc, RESIDENT_MAP_FIELDS);
+    }
+    return { next, overlaid: writes.length > 0 };
+  };
+
+  /**
+   * Settle a composed view: cache it for overlaid ids, then move the derived
+   * indices with it. An overlay does not keep a row resident on its own: a
+   * local write to an on-demand component is a write to the store's row until
+   * the component is read, exactly as a remote one is.
+   */
+  const publish = (
+    id: string,
+    next: Entity | null,
+    overlaid: boolean,
+    previous: Snapshot,
+  ): Snapshot => {
+    const retained = next !== null && resident(id, next) ? next : null;
+    if (overlaid) effective.set(id, retained);
+    else effective.delete(id);
+    const settled: Snapshot = {
+      row: retained,
+      components: retained === null ? [] : presenceOfRow(id, retained),
+    };
+    reconcileIndex(previous, settled);
+    return settled;
+  };
+
+  /**
+   * Settle the view after a residency move — an install or an expiry. Nothing
+   * here journals: keeping or dropping a value is not a content change, so a
+   * derived reader has nothing to re-run for (#936).
+   */
+  const refresh = (id: string, previous: Snapshot): void => {
+    const { next, overlaid } = compose(id);
+    publish(id, next, overlaid, previous);
+    notify();
+  };
+
   /**
    * Recompute the composed view after the base or overlay changed, bumping the
    * revision iff a reader can see the difference. `previous` is the composed
@@ -550,40 +550,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    * already-visible optimistic write a no-op for the revision.
    */
   const resync = (id: string, previous: Snapshot): void => {
-    const base = entities.get(id) ?? null;
-    const writes = overlay.get(id);
-    let next = base;
-    if (writes !== undefined) {
-      for (const write of writes) {
-        next = applyUpdate(next, write.update, 0, write.hlc, RESIDENT_MAP_FIELDS);
-      }
-    }
-    const nextComponents = next === null ? [] : presenceOfRow(id, next);
-    // A pin belongs to the base row, not to the composed view: a local drop
-    // overlay can hide a component for a moment without releasing the value the
-    // base still holds. A pin for a component the base no longer carries — or
-    // that the policy now holds — is not a pin.
-    const baseComponents = base === null ? [] : presenceOfRow(id, base);
-    dropStalePins(id, baseComponents);
-
-    const overlaid = writes !== undefined && writes.length > 0;
-    // An overlay does not keep a row resident on its own: a local write to an
-    // on-demand component is a write to the store's row until the component is
-    // opened, exactly as a remote one is.
-    const retained = next !== null && resident(id, next) ? next : null;
-    const nextSnapshot: Snapshot = {
-      row: retained,
-      components: retained === null ? [] : nextComponents,
-    };
-
-    if (overlaid) effective.set(id, retained);
-    else effective.delete(id);
-
-    // A row that left the replica — or that the policy now holds outright —
-    // must not leave a phantom pin behind.
-    if (retained === null) dropPinsFor(id);
-
-    reconcileIndex(previous, nextSnapshot);
+    const { next, overlaid } = compose(id);
+    const settled = publish(id, next, overlaid, previous);
+    const retained = settled.row;
 
     const journalChange = (deleted: boolean, components: readonly string[]): void =>
       bump(id, deleted, components);
@@ -603,7 +572,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       previous.row,
       previous.components,
       retained,
-      nextSnapshot.components,
+      settled.components,
     );
     if (contentChanged(previous.row, retained) || touched.length > 0) {
       journalChange(retained.deleted_hlc !== null, touched);
@@ -690,9 +659,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     effective.delete(id);
     orphans.delete(id);
     pendingPresence.delete(id);
-    pendingOpens.delete(id);
-    cancelOpensFor(id);
-    dropPinsFor(id);
+    cancelReadsFor(id);
     if (base !== undefined) removeFromModel(base.model, id);
   };
 
@@ -709,6 +676,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       seen.add(id);
       const previous = capture(id);
       removeRow(id);
+      for (const component of previous.components) leases.forget({ entityId: id, component });
       reconcileIndex(previous, { row: null, components: [] });
       if (previous.row === null) continue;
       removed = true;
@@ -727,11 +695,15 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     orphans.clear();
     overlay.clear();
     effective.clear();
-    pendingOpens.clear();
     pendingPresence.clear();
-    inFlightOpens.clear();
-    openEpochs.clear();
-    for (const key of pins.keys()) dropPin(key);
+    cancelAllReads();
+    // A load replaces the in-memory view, so every claim on the old values goes
+    // with it. A timer armed by the replaced table can still fire; `dropResidentValue`
+    // checks the live table before dropping anything.
+    leases = createLeaseTable({
+      residencyTtlMs: options?.residencyTtlMs,
+      onExpire: (key) => dropResidentValue(key),
+    });
     journal.length = 0;
     journalStart = 0;
     // One linear pass rebuilds the base, the adjacency index, and component
@@ -869,7 +841,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const byModel: Record<string, number> = {};
     const heldByModel: Record<string, number> = {};
     const heldComponents: Record<string, number> = {};
-    const pinnedComponents: Record<string, number> = {};
     const nonResidentComponents: Record<string, number> = {};
     const ids = new Set<string>(entities.keys());
     for (const [id, row] of effective) {
@@ -896,9 +867,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         const hasValue = row.data.fields[componentField(component)] !== undefined;
         if (hasValue) residentComponents += 1;
         if (holds(component)) heldComponents[component] = (heldComponents[component] ?? 0) + 1;
-        if (pins.has(pinKey(id, component))) {
-          pinnedComponents[component] = (pinnedComponents[component] ?? 0) + 1;
-        }
         if (!hasValue) {
           nonResidentComponents[component] = (nonResidentComponents[component] ?? 0) + 1;
           nonResident += 1;
@@ -910,11 +878,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       byModel,
       held: heldTotal,
       heldByModel,
-      pinned: pins.size,
+      leases: leases.stats(),
       components,
       residentComponents,
       heldComponents,
-      pinnedComponents,
       nonResidentComponents,
       nonResident,
       revision,
@@ -934,73 +901,35 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return changes;
   };
 
-  /** Keep a component's value resident until it is closed and its TTL elapses. */
-  const pinComponent = (id: string, component: string): void => {
-    const key = pinKey(id, component);
-    dropPin(key);
-    pins.set(key, { open: true, timer: null });
-  };
-
   /**
-   * Release a component's value: the pin goes, the value leaves the base, and
-   * the component stays known to exist. A row with nothing left to retain is
-   * evicted.
+   * Drop a value whose claim went inactive for longer than the residency grace
+   * period. Expiry is a residency event, not a content change: the value leaves
+   * the composed view and nothing journals (#936).
    */
-  const releaseComponent = (id: string, component: string): void => {
-    const key = pinKey(id, component);
-    if (!pins.has(key)) return;
-    dropPin(key);
-    const previous = capture(id);
+  const dropResidentValue = (key: LeaseKey): void => {
+    // A timer armed by a table a `load` has since replaced must not drop a value
+    // the live table still claims.
+    if (leases.isResident(key)) return;
+    const id = key.entityId;
+    const component = key.component;
     const base = entities.get(id);
-    if (base === undefined) return;
-    let next = base;
-    if (!holds(component)) {
-      const field = componentField(component);
-      if (base.data.fields[field] !== undefined) {
-        const { [field]: _released, ...fields } = base.data.fields;
-        next = { ...base, data: { fields } };
-        ensureDormant(id, component);
-      }
-    }
-    if (!resident(id, next)) {
-      removeRow(id);
-      reconcileIndex(previous, { row: null, components: [] });
-      if (previous.row !== null) bump(id, true, previous.components);
-    } else {
-      entities.set(id, next);
-      resync(id, previous);
-    }
-    notify();
-  };
-
-  const closePin = (id: string, component: string): void => {
-    const pin = pins.get(pinKey(id, component));
-    if (pin === undefined || !pin.open) return;
-    pin.open = false;
-    if (!Number.isFinite(pinnedTtlMs)) {
-      releaseComponent(id, component);
-      return;
-    }
-    pin.timer = setTimeout(() => releaseComponent(id, component), pinnedTtlMs);
-    unrefTimer(pin.timer);
-  };
-
-  /** Mark a still-cached component open again, cancelling its pending release. */
-  const reopenPin = (id: string, component: string): void => {
-    const pin = pins.get(pinKey(id, component));
-    if (pin === undefined) return;
-    if (pin.timer !== null) {
-      clearTimeout(pin.timer);
-      pin.timer = null;
-    }
-    pin.open = true;
+    if (base === undefined || holds(component)) return;
+    const field = componentField(component);
+    if (base.data.fields[field] === undefined) return;
+    const previous = capture(id);
+    const { [field]: _released, ...fields } = base.data.fields;
+    const next: Entity = { ...base, data: { fields } };
+    ensureDormant(id, component);
+    if (resident(id, next)) entities.set(id, next);
+    else removeRow(id);
+    refresh(id, previous);
   };
 
   /** Read one component through the seam. */
   const readOne = async (id: string, component: string): Promise<Entity | null> =>
     options?.readComponent?.(id, component) ?? null;
 
-  /** Install a component read for `id`, pinning it and replaying buffered writes. */
+  /** Install a component read for `id`, replaying writes buffered behind it. */
   const installComponent = (
     id: string,
     component: string,
@@ -1029,60 +958,59 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     addToModel(row.model, id);
     forgetDormant(id, component);
     if (base === null) absorbPendingPresence(id);
-    if (!holds(component)) pinComponent(id, component);
     for (const entry of buffered)
       applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
-    resync(id, previous);
-    notify();
+    refresh(id, previous);
     return true;
   };
 
-  const openComponent = (id: string, component: string): Promise<Entity | null> => {
-    const view = get(id);
-    if (holds(component)) return Promise.resolve(view ?? null);
-    if (view !== undefined) {
-      const field = componentField(component);
-      if (view.data.fields[field] !== undefined || pins.has(pinKey(id, component))) {
-        reopenPin(id, component);
-        return Promise.resolve(get(id) ?? view);
+  /**
+   * Materialize one component under a claim. The claim is taken before the
+   * store read, so nothing can drop the value between reading and installing
+   * it, and it is released by the caller once the read has settled.
+   */
+  const materialize = async (id: string, component: string): Promise<void> => {
+    if (holds(component)) return;
+    const release = leases.acquire({ entityId: id, component });
+    try {
+      // A resident value is shared, not re-read; claiming it refreshes its
+      // grace period, which is what makes a remount inside the TTL free.
+      if (isComponentResident(id, component)) return;
+      let reads = inFlightReads.get(id);
+      if (reads === undefined) inFlightReads.set(id, (reads = new Map()));
+      const pending = reads.get(component);
+      if (pending !== undefined) {
+        await pending;
+        return;
+      }
+      let epochs = readEpochs.get(id);
+      if (epochs === undefined) readEpochs.set(id, (epochs = new Map()));
+      const epoch = ++nextReadEpoch;
+      epochs.set(component, epoch);
+      const reading = (async (): Promise<void> => {
+        const loaded = await readOne(id, component);
+        // A row that left the replica while the read was in flight wins: the
+        // component does not reappear behind the caller's back.
+        if (epochs.get(component) !== epoch) return;
+        // Out of flight before the install, or replaying the writes buffered
+        // behind the read would buffer them again.
+        reads.delete(component);
+        if (loaded === null) return;
+        const buffered = pendingWrites.get(id) ?? [];
+        pendingWrites.delete(id);
+        installComponent(id, component, loaded, buffered);
+      })();
+      reads.set(component, reading);
+      await reading;
+    } finally {
+      release();
+      // A read that installed nothing leaves no value to keep, so it leaves no
+      // claim behind either.
+      if (!isComponentResident(id, component) && leases.refsOf({ entityId: id, component }) === 0) {
+        leases.forget({ entityId: id, component });
       }
     }
-    const key = pinKey(id, component);
-    const pending = inFlightOpens.get(key);
-    if (pending !== undefined) return pending;
-    const epoch = ++nextOpenEpoch;
-    openEpochs.set(key, epoch);
-    const read = readOne(id, component).then(
-      (loaded) => {
-        if (inFlightOpens.get(key) === read) inFlightOpens.delete(key);
-        // A close or eviction while the read was in flight wins: the component
-        // does not reappear behind the caller's back.
-        if (openEpochs.get(key) !== epoch) return null;
-        if (loaded === null) return null;
-        const buffered = pendingOpens.get(id) ?? [];
-        pendingOpens.delete(id);
-        return installComponent(id, component, loaded, buffered) ? (get(id) ?? null) : null;
-      },
-      (error: unknown) => {
-        if (inFlightOpens.get(key) === read) inFlightOpens.delete(key);
-        throw error;
-      },
-    );
-    inFlightOpens.set(key, read);
-    return read;
   };
-
-  const open = (id: string, component: string): Promise<Entity | null> =>
-    openComponent(id, component);
-
-  const close = (id: string, component: string): void => {
-    cancelOpen(pinKey(id, component));
-    if (!pins.has(pinKey(id, component))) return;
-    closePin(id, component);
-  };
-
-  const isOpen = (id: string, component: string): boolean =>
-    pins.get(pinKey(id, component))?.open === true;
 
   const isHeld = (component: string): boolean => holds(component);
 
@@ -1097,6 +1025,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const residentComponents = (id: string): readonly string[] => {
     const row = viewOf(id);
     return row === null ? [] : fieldComponentsOf(row);
+  };
+
+  const read = async (id: string, components: readonly string[]): Promise<Entity | null> => {
+    await Promise.all(components.map((component) => materialize(id, component)));
+    return get(id) ?? null;
   };
 
   const componentVersion = (id: string, component: string): number | undefined => {
@@ -1127,9 +1060,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     iterate,
     isHeld,
     isRowHeld,
-    open,
-    close,
-    isOpen,
+    read,
     isComponentResident,
     residentComponents,
     componentVersion,

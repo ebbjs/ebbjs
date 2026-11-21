@@ -1255,11 +1255,17 @@ describe("replica: journal capacity (#499)", () => {
       position: 9,
       changes: 0,
       changeFloor: 4,
-      pinned: 0,
+      leases: {
+        leased: 0,
+        inactive: 0,
+        resident: 0,
+        timers: 0,
+        oldestInactiveMs: 0,
+        byComponent: {},
+      },
       components: 0,
       residentComponents: 0,
       heldComponents: {},
-      pinnedComponents: {},
       nonResidentComponents: {},
       nonResident: 0,
     });
@@ -1333,11 +1339,17 @@ describe("replica: stats (#499)", () => {
       position: 7,
       changes: 3,
       changeFloor: 0,
-      pinned: 0,
+      leases: {
+        leased: 0,
+        inactive: 0,
+        resident: 0,
+        timers: 0,
+        oldestInactiveMs: 0,
+        byComponent: {},
+      },
       components: 2,
       residentComponents: 2,
       heldComponents: { "note/title": 1, "todo/title": 1 },
-      pinnedComponents: {},
       nonResidentComponents: {},
       nonResident: 0,
     });
@@ -1374,7 +1386,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(createReplica().isHeld("document/text")).toBe(true);
   });
 
-  it("opens a cold on-demand row, pinning and journaling it", async () => {
+  it("reads a cold component through the store as residency, never as content", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const reads: string[] = [];
     const replica = createReplica({
@@ -1386,22 +1398,29 @@ describe("replica: on-demand residency (#500)", () => {
       fired += 1;
     });
 
-    const opened = await replica.open("doc_1", "document/text");
+    const row = await replica.read("doc_1", ["document/text"]);
 
-    expect(opened).toEqual(documentRow("doc_1"));
+    expect(row).toEqual(documentRow("doc_1"));
     expect(reads).toEqual(["doc_1"]);
     expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
     expect(replica.iterate("document")).toEqual([documentRow("doc_1")]);
-    expect(replica.isOpen("doc_1", "document/text")).toBe(true);
-    expect(replica.stats()).toMatchObject({ entities: 1, byModel: { document: 1 }, pinned: 1 });
+    // A read installs a value; it is not a content change, so nothing journals
+    // and the revision a derived reader tracks does not move.
+    expect(replica.revision).toBe(0);
+    expect(replica.changesSince(0)).toEqual([]);
+    // The read released its claim before returning, so the value waits out one
+    // grace period rather than vanishing from under the projection.
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 1,
+      resident: 1,
+      timers: 1,
+      byComponent: { "document/text": { leased: 0, inactive: 1 } },
+    });
     expect(fired).toBe(1);
-    // A derived reader must see the row arrive.
-    expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "doc_1", deleted: false, components: ["document/text"] },
-    ]);
   });
 
-  it("misses on a cold open that reads nothing, then installs on a later open", async () => {
+  it("misses on a cold read that reads nothing, then installs on a later read", async () => {
     const rows: Record<string, Entity> = {};
     const reads: string[] = [];
     const replica = createReplica({
@@ -1409,18 +1428,24 @@ describe("replica: on-demand residency (#500)", () => {
       readComponent: reader(rows, reads),
     });
 
-    expect(await replica.open("doc_1", "document/text")).toBeNull();
-    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
+    expect(await replica.read("doc_1", ["document/text"])).toBeNull();
     expect(replica.get("doc_1")).toBeUndefined();
     expect(replica.revision).toBe(0);
+    expect(replica.stats().leases).toEqual({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+      timers: 0,
+      oldestInactiveMs: 0,
+      byComponent: {},
+    });
 
     rows.doc_1 = documentRow("doc_1");
-    expect(await replica.open("doc_1", "document/text")).toEqual(documentRow("doc_1"));
-    expect(replica.isOpen("doc_1", "document/text")).toBe(true);
+    expect(await replica.read("doc_1", ["document/text"])).toEqual(documentRow("doc_1"));
     expect(reads).toEqual(["doc_1", "doc_1"]);
   });
 
-  it("coalesces concurrent opens and re-opens without another read", async () => {
+  it("coalesces concurrent reads and shares the warm value without another read", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const reads: string[] = [];
     const replica = createReplica({
@@ -1429,31 +1454,60 @@ describe("replica: on-demand residency (#500)", () => {
     });
 
     const [first, second] = await Promise.all([
-      replica.open("doc_1", "document/text"),
-      replica.open("doc_1", "document/text"),
+      replica.read("doc_1", ["document/text"]),
+      replica.read("doc_1", ["document/text"]),
     ]);
     expect(first).toEqual(documentRow("doc_1"));
     expect(second).toEqual(first);
     expect(reads).toEqual(["doc_1"]);
 
     const revision = replica.revision;
-    expect(await replica.open("doc_1", "document/text")).toEqual(documentRow("doc_1"));
+    expect(await replica.read("doc_1", ["document/text"])).toEqual(documentRow("doc_1"));
     expect(reads).toEqual(["doc_1"]);
     expect(replica.revision).toBe(revision);
   });
 
-  it("replays updates that land while a cold open is reading", async () => {
+  it("holds the lease from before the store read until the value is installed", async () => {
+    let deliver!: (row: Entity) => void;
+    const replica = createReplica({
+      materialization: onDemand,
+      residencyTtlMs: 1_000,
+      readComponent: () =>
+        new Promise<Entity>((resolve) => {
+          deliver = resolve;
+        }),
+    });
+
+    const reading = replica.read("doc_1", ["document/text"]);
+    expect(replica.stats().leases).toMatchObject({
+      leased: 1,
+      inactive: 0,
+      resident: 1,
+      byComponent: { "document/text": { leased: 1, inactive: 0 } },
+    });
+
+    deliver(documentRow("doc_1"));
+    expect(await reading).toEqual(documentRow("doc_1"));
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 1,
+      resident: 1,
+      byComponent: { "document/text": { leased: 0, inactive: 1 } },
+    });
+  });
+
+  it("replays updates that land while a cold read is reading", async () => {
     let release!: (row: Entity) => void;
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      residencyTtlMs: 0,
       readComponent: () =>
         new Promise<Entity>((resolve) => {
           release = resolve;
         }),
     });
 
-    const opening = replica.open("doc_1", "document/text");
+    const reading = replica.read("doc_1", ["document/text"]);
     ingest(
       replica,
       patch({
@@ -1469,7 +1523,7 @@ describe("replica: on-demand residency (#500)", () => {
     );
     release(documentRow("doc_1"));
 
-    expect(await opening).toEqual(
+    expect(await reading).toEqual(
       entity({
         id: "doc_1",
         model: "document",
@@ -1481,40 +1535,44 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.get("doc_1")?.data.fields.text).toEqual(leaf("live", "u_live", 6));
   });
 
-  it("does not resurrect a row whose open was closed while the read was in flight", async () => {
+  it("does not resurrect a row evicted while its read was in flight", async () => {
     let release!: (row: Entity) => void;
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      residencyTtlMs: 0,
       readComponent: () =>
         new Promise<Entity>((resolve) => {
           release = resolve;
         }),
     });
 
-    const opening = replica.open("doc_1", "document/text");
-    replica.close("doc_1", "document/text");
+    const reading = replica.read("doc_1", ["document/text"]);
+    replica.evict(["doc_1"]);
     release(documentRow("doc_1"));
 
-    expect(await opening).toBeNull();
+    expect(await reading).toBeNull();
     expect(replica.get("doc_1")).toBeUndefined();
-    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
-    expect(replica.stats().pinned).toBe(0);
   });
 
-  it("does not open or pin a held component", async () => {
+  it("does not read or lease a held component", async () => {
     const replica = createReplica({ materialization: onDemand });
 
-    expect(await replica.open("e_1", "todo/title")).toBeNull();
-    expect(replica.isOpen("e_1", "todo/title")).toBe(false);
-    expect(replica.stats().pinned).toBe(0);
+    expect(await replica.read("e_1", ["todo/title"])).toBeNull();
     expect(replica.revision).toBe(0);
+    expect(replica.stats().leases).toEqual({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+      timers: 0,
+      oldestInactiveMs: 0,
+      byComponent: {},
+    });
   });
 
-  it("drops the pin when a fold detaches the pinned component", async () => {
+  it("keeps a component's value while its claim lives, and drops it when the fold detaches it", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
-    await replica.open("doc_1", "document/text");
+    await replica.read("doc_1", ["document/text"]);
 
     ingest(
       replica,
@@ -1531,20 +1589,15 @@ describe("replica: on-demand residency (#500)", () => {
     );
 
     // The row keeps the model its create named and survives with no component;
-    // the pin that held the detached value goes with the component.
+    // the value the claim kept goes with the component.
     expect(replica.get("doc_1")?.model).toBe("document");
     expect(replica.get("doc_1")?.data.fields.text).toBeUndefined();
-    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
-    expect(replica.stats().pinned).toBe(0);
-
-    replica.close("doc_1", "document/text");
-    expect(replica.get("doc_1")?.model).toBe("document");
   });
 
-  it("keeps folding live updates into a pinned row", async () => {
+  it("keeps folding live updates into a read row", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
-    await replica.open("doc_1", "document/text");
+    await replica.read("doc_1", ["document/text"]);
 
     ingest(
       replica,
@@ -1561,11 +1614,10 @@ describe("replica: on-demand residency (#500)", () => {
     );
 
     expect(replica.get("doc_1")?.data.fields.text).toEqual(leaf("live", "u_live", 6));
-    expect(replica.isOpen("doc_1", "document/text")).toBe(true);
   });
 
-  it("drops a patch for an unopened on-demand row instead of retaining an orphan", () => {
-    const replica = createReplica({ materialization: onDemand, pinnedTtlMs: 0 });
+  it("drops a patch for an unread on-demand row instead of retaining an orphan", () => {
+    const replica = createReplica({ materialization: onDemand });
 
     ingest(
       replica,
@@ -1589,7 +1641,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.toRecord().entities).toEqual([]);
   });
 
-  it("keeps 10k held metadata rows and materializes only an opened body", async () => {
+  it("keeps 10k held metadata rows and materializes only a read body", async () => {
     // The #500 shape at 10k documents: page metadata is held, bodies are not.
     const entities: Entity[] = [];
     for (let i = 0; i < 10_000; i += 1) {
@@ -1599,7 +1651,6 @@ describe("replica: on-demand residency (#500)", () => {
     const rows = { doc_0: documentRow("doc_0") };
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
       readComponent: reader(rows),
     });
 
@@ -1615,91 +1666,58 @@ describe("replica: on-demand residency (#500)", () => {
       held: 10_000,
       heldByModel: { page: 10_000 },
       byModel: { page: 10_000 },
-      pinned: 0,
+      leases: { leased: 0, inactive: 0, resident: 0 },
     });
     expect(replica.stats().byModel.document).toBeUndefined();
 
-    await replica.open("doc_0", "document/text");
+    await replica.read("doc_0", ["document/text"]);
 
     expect(replica.stats()).toMatchObject({
       held: 10_000,
       byModel: { page: 10_000, document: 1 },
-      pinned: 1,
-    });
-  });
-
-  it("closes an open row, releasing it with the TTL disabled, and leaves held rows alone", async () => {
-    const rows = { doc_1: documentRow("doc_1") };
-    const replica = createReplica({
-      materialization: onDemand,
-      pinnedTtlMs: 0,
-      readComponent: reader(rows),
-    });
-    ingest(
-      replica,
-      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Todo", "u_1", 10) } }),
-      1,
-    );
-    await replica.open("doc_1", "document/text");
-    const openRevision = replica.revision;
-
-    replica.close("doc_1", "document/text");
-
-    expect(replica.get("doc_1")).toBeUndefined();
-    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
-    expect(replica.stats().pinned).toBe(0);
-    expect(replica.changesSince(openRevision)).toEqual([
-      {
-        revision: openRevision + 1,
-        id: "doc_1",
-        deleted: true,
-        components: ["document/text"],
+      leases: {
+        leased: 0,
+        inactive: 1,
+        resident: 1,
+        byComponent: { "document/text": { leased: 0, inactive: 1 } },
       },
-    ]);
-
-    replica.close("e_1", "todo/title");
-    expect(replica.get("e_1")?.model).toBe("todo");
+    });
   });
 
-  it("evicts a row and drops its pin", async () => {
+  it("evicts a row and its value", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
-    await replica.open("doc_1", "document/text");
+    await replica.read("doc_1", ["document/text"]);
 
     replica.evict(["doc_1"]);
 
-    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
-    expect(replica.stats().pinned).toBe(0);
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.stats().residentComponents).toBe(0);
   });
 
-  it("retains every opened row", async () => {
+  it("retains every read row", async () => {
     const rows: Record<string, Entity> = {};
     for (let i = 1; i <= 20; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
       readComponent: reader(rows),
     });
 
-    for (const id of Object.keys(rows)) await replica.open(id, "document/text");
+    for (const id of Object.keys(rows)) await replica.read(id, ["document/text"]);
 
-    expect(replica.stats().pinned).toBe(20);
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 20, resident: 20 });
     expect(replica.stats().byModel).toEqual({ document: 20 });
   });
 
-  it("persists held rows only, never a pinned body", async () => {
+  it("persists held rows only, never a read body", async () => {
     const rows = { doc_1: documentRow("doc_1") };
-    const replica = createReplica({
-      materialization: onDemand,
-      pinnedTtlMs: 0,
-      readComponent: reader(rows),
-    });
+    const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
     ingest(
       replica,
       put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Todo", "u_1", 10) } }),
       1,
     );
-    await replica.open("doc_1", "document/text");
+    await replica.read("doc_1", ["document/text"]);
 
     expect(replica.toRecord().entities).toEqual([
       entity({
@@ -1714,14 +1732,10 @@ describe("replica: on-demand residency (#500)", () => {
     ]);
   });
 
-  it("clears pins on load and installs held rows only", async () => {
+  it("drops every claim on load and installs held rows only", async () => {
     const rows = { doc_1: documentRow("doc_1") };
-    const replica = createReplica({
-      materialization: onDemand,
-      pinnedTtlMs: 0,
-      readComponent: reader(rows),
-    });
-    await replica.open("doc_1", "document/text");
+    const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
+    await replica.read("doc_1", ["document/text"]);
 
     replica.load({
       format: REPLICA_RECORD_FORMAT,
@@ -1731,14 +1745,17 @@ describe("replica: on-demand residency (#500)", () => {
       entities: [documentRow("doc_2"), entity({ id: "e_1", model: "todo" })],
     });
 
-    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
     expect(replica.get("doc_1")).toBeUndefined();
     expect(replica.get("doc_2")).toBeUndefined();
     expect(replica.get("e_1")?.model).toBe("todo");
-    expect(replica.stats()).toMatchObject({ entities: 1, byModel: { todo: 1 }, pinned: 0 });
+    expect(replica.stats()).toMatchObject({
+      entities: 1,
+      byModel: { todo: 1 },
+      leases: { leased: 0, inactive: 0, resident: 0 },
+    });
   });
 
-  describe("pinned TTL", () => {
+  describe("residency grace period", () => {
     beforeEach(() => {
       vi.useFakeTimers();
     });
@@ -1747,86 +1764,126 @@ describe("replica: on-demand residency (#500)", () => {
       vi.useRealTimers();
     });
 
-    it("releases a closed row once the TTL elapses", async () => {
+    it("releases a read value once its grace period elapses, journalling nothing", async () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 1_000,
+        residencyTtlMs: 1_000,
         readComponent: reader(rows),
       });
-      await replica.open("doc_1", "document/text");
-      replica.close("doc_1", "document/text");
+      await replica.read("doc_1", ["document/text"]);
+      const revision = replica.revision;
 
       await vi.advanceTimersByTimeAsync(999);
-      expect(replica.isOpen("doc_1", "document/text")).toBe(false);
       expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+      expect(replica.stats().leases.oldestInactiveMs).toBe(999);
 
       await vi.advanceTimersByTimeAsync(1);
+
+      // The value left the composed view, and that is not a content change: a
+      // derived reader sees no revision move and no journal entry.
       expect(replica.get("doc_1")).toBeUndefined();
-      expect(replica.stats().pinned).toBe(0);
+      expect(replica.revision).toBe(revision);
+      expect(replica.changesSince(revision)).toEqual([]);
+      expect(replica.stats().leases).toEqual({
+        leased: 0,
+        inactive: 0,
+        resident: 0,
+        timers: 0,
+        oldestInactiveMs: 0,
+        byComponent: {},
+      });
     });
 
-    it("cancels the TTL when a closed row is opened again", async () => {
+    it("cancels the pending release when a read lands inside the grace period", async () => {
       const rows = { doc_1: documentRow("doc_1") };
+      const reads: string[] = [];
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 1_000,
-        readComponent: reader(rows),
+        residencyTtlMs: 1_000,
+        readComponent: reader(rows, reads),
       });
-      await replica.open("doc_1", "document/text");
-      replica.close("doc_1", "document/text");
+      await replica.read("doc_1", ["document/text"]);
 
       await vi.advanceTimersByTimeAsync(600);
-      await replica.open("doc_1", "document/text");
+      await replica.read("doc_1", ["document/text"]);
+      expect(reads).toEqual(["doc_1"]);
+
       await vi.advanceTimersByTimeAsync(600);
-      expect(replica.isOpen("doc_1", "document/text")).toBe(true);
       expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+
+      await vi.advanceTimersByTimeAsync(400);
+      expect(replica.get("doc_1")).toBeUndefined();
     });
 
-    it("keeps an open row indefinitely and releases it on close when the TTL is disabled", async () => {
+    it("never expires a value under a live claim", async () => {
+      let deliver!: (row: Entity) => void;
+      const replica = createReplica({
+        materialization: onDemand,
+        residencyTtlMs: 1_000,
+        readComponent: () =>
+          new Promise<Entity>((resolve) => {
+            deliver = resolve;
+          }),
+      });
+
+      const reading = replica.read("doc_1", ["document/text"]);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      deliver(documentRow("doc_1"));
+
+      expect(await reading).toEqual(documentRow("doc_1"));
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+
+      // The release that ends the claim starts a fresh grace period.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(replica.get("doc_1")).toBeUndefined();
+    });
+
+    it("keeps a read value indefinitely when the grace period is disabled", async () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 0,
+        residencyTtlMs: 0,
         readComponent: reader(rows),
       });
-      await replica.open("doc_1", "document/text");
+      await replica.read("doc_1", ["document/text"]);
 
       await vi.advanceTimersByTimeAsync(10 * 60_000);
-      expect(replica.isOpen("doc_1", "document/text")).toBe(true);
 
-      replica.close("doc_1", "document/text");
-      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+      expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1, timers: 0 });
     });
 
-    it("cancels a pending TTL release when the row is evicted", async () => {
+    it("leaves a pending release as a no-op when the row is evicted first", async () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 1_000,
+        residencyTtlMs: 1_000,
         readComponent: reader(rows),
       });
-      await replica.open("doc_1", "document/text");
-      replica.close("doc_1", "document/text");
+      await replica.read("doc_1", ["document/text"]);
       replica.evict(["doc_1"]);
       const revision = replica.revision;
 
       await vi.advanceTimersByTimeAsync(5_000);
 
-      expect(replica.stats().pinned).toBe(0);
+      expect(replica.get("doc_1")).toBeUndefined();
       expect(replica.revision).toBe(revision);
+      expect(replica.changesSince(revision)).toEqual([]);
     });
   });
 });
 
 describe("replica: a read selects every component (#934)", () => {
-  // Every component of the row is on demand, so a read opens one per field.
+  // Every component of the row is on demand, so a read selects one per field.
   // Three is the issue's repro; twenty is past the window the replica used to
   // hold, so it goes red again if a cap ever comes back.
   const allOnDemand = { holds: (): boolean => false };
   const noteId = "note_1";
   const fieldsOf = (count: number): readonly string[] =>
     Array.from({ length: count }, (_, index) => `f_${index}`);
+  const componentsOf = (count: number): readonly string[] =>
+    fieldsOf(count).map((field) => `note/${field}`);
 
   const lazyRow = (fields: readonly string[]): Entity =>
     entity({
@@ -1841,31 +1898,49 @@ describe("replica: a read selects every component (#934)", () => {
       updated_hlc: makeHlc(10),
     });
 
-  const openEveryComponent = async (count: number): Promise<Replica> => {
+  /** One read of every component, and the revision it started from. */
+  const readEveryComponent = async (
+    count: number,
+  ): Promise<{ replica: Replica; revision: number }> => {
     const replica = createReplica({
       materialization: allOnDemand,
-      pinnedTtlMs: 0,
+      residencyTtlMs: 0,
       readComponent: async () => lazyRow(fieldsOf(count)),
     });
     ingest(replica, create({ actionId: "a_1", updateId: "u_1", ms: 10 }), 1);
-    for (const field of fieldsOf(count)) await replica.open(noteId, `note/${field}`);
-    return replica;
+    const revision = replica.revision;
+    await replica.read(noteId, componentsOf(count));
+    return { replica, revision };
   };
 
-  const expectEveryComponentResident = (replica: Replica, count: number): void => {
+  const expectEveryComponentResident = (
+    replica: Replica,
+    revision: number,
+    count: number,
+  ): void => {
     expect(Object.keys(replica.get(noteId)?.data.fields ?? {})).toHaveLength(count);
     expect(
       fieldsOf(count).filter((field) => !replica.isComponentResident(noteId, `note/${field}`)),
     ).toEqual([]);
-    expect(replica.stats().pinned).toBe(count);
+    // One read, one grace period, no cap on how many components a row keeps —
+    // and residency never moves the revision.
+    expect(replica.revision).toBe(revision);
+    const leases = replica.stats().leases;
+    expect(leases).toMatchObject({ leased: 0, inactive: count, resident: count });
+    expect(Object.keys(leases.byComponent).sort()).toEqual([...componentsOf(count)].sort());
+    for (const counts of Object.values(leases.byComponent)) {
+      expect(counts).toMatchObject({ leased: 0, inactive: 1 });
+    }
   };
 
   it("returns all three components of a row after all three are read", async () => {
-    expectEveryComponentResident(await openEveryComponent(3), 3);
+    const { replica, revision } = await readEveryComponent(3);
+    expectEveryComponentResident(replica, revision, 3);
   });
 
   it("returns all twenty components of a row after all twenty are read", async () => {
-    expectEveryComponentResident(await openEveryComponent(20), 20);
+    const { replica, revision } = await readEveryComponent(20);
+    expectEveryComponentResident(replica, revision, 20);
   });
 });
 
@@ -2026,7 +2101,7 @@ describe("replica: residency per component (#802)", () => {
     });
 
   const noteReplica = (): Replica => {
-    const replica = createReplica({ materialization: componentPolicy, pinnedTtlMs: 0 });
+    const replica = createReplica({ materialization: componentPolicy, residencyTtlMs: 0 });
     replica.load({
       format: REPLICA_RECORD_FORMAT,
       componentVersions: {},
@@ -2055,8 +2130,7 @@ describe("replica: residency per component (#802)", () => {
         "note/updated_at": 1,
       },
       nonResidentComponents: { "note/body": 1 },
-      pinnedComponents: {},
-      pinned: 0,
+      leases: { leased: 0, inactive: 0, resident: 0 },
     });
     expect(replica.isComponentResident(noteId, "note/body")).toBe(false);
     expect([...replica.residentComponents(noteId)].sort()).toEqual([
@@ -2066,11 +2140,11 @@ describe("replica: residency per component (#802)", () => {
     ]);
   });
 
-  it("opens one component through the cold-read seam in exactly one read", async () => {
+  it("reads one component through the cold-read seam in exactly one read", async () => {
     const reads: string[] = [];
     const replica = createReplica({
       materialization: componentPolicy,
-      pinnedTtlMs: 0,
+      residencyTtlMs: 0,
       readComponent: async (id, component) => {
         reads.push(`${id}:${component}`);
         return id === noteId && component === "note/body" ? noteRow() : null;
@@ -2084,42 +2158,57 @@ describe("replica: residency per component (#802)", () => {
       entities: [noteRow()],
     });
 
-    const opened = await replica.open(noteId, "note/body");
+    const row = await replica.read(noteId, ["note/body"]);
 
     expect(reads).toEqual([`${noteId}:note/body`]);
-    expect(opened?.data.fields.body).toEqual(leaf("300 KB body", "u_body", 10));
+    expect(row?.data.fields.body).toEqual(leaf("300 KB body", "u_body", 10));
     expect(replica.stats()).toMatchObject({
       residentComponents: 4,
       nonResident: 0,
       nonResidentComponents: {},
-      pinned: 1,
-      pinnedComponents: { "note/body": 1 },
+      leases: {
+        leased: 0,
+        inactive: 1,
+        resident: 1,
+        timers: 0,
+        byComponent: { "note/body": { leased: 0, inactive: 1 } },
+      },
     });
-    // A pinned re-open reads nothing.
-    await replica.open(noteId, "note/body");
+    // A warm re-read inside the grace period reads nothing.
+    await replica.read(noteId, ["note/body"]);
     expect(reads).toHaveLength(1);
   });
 
-  it("releases a closed component back to non-resident without losing the row", async () => {
-    const replica = createReplica({
-      materialization: componentPolicy,
-      pinnedTtlMs: 0,
-      readComponent: async () => noteRow(),
-    });
-    replica.load({
-      format: REPLICA_RECORD_FORMAT,
-      componentVersions: {},
-      position: 1,
-      revision: 1,
-      entities: [noteRow()],
-    });
+  it("releases a read component back to non-resident after its grace period, keeping the row", async () => {
+    vi.useFakeTimers();
+    try {
+      const replica = createReplica({
+        materialization: componentPolicy,
+        residencyTtlMs: 1_000,
+        readComponent: async () => noteRow(),
+      });
+      replica.load({
+        format: REPLICA_RECORD_FORMAT,
+        componentVersions: {},
+        position: 1,
+        revision: 1,
+        entities: [noteRow()],
+      });
 
-    await replica.open(noteId, "note/body");
-    replica.close(noteId, "note/body");
+      await replica.read(noteId, ["note/body"]);
+      expect(replica.stats()).toMatchObject({ nonResident: 0, residentComponents: 4 });
 
-    expect(replica.get(noteId)?.data.fields.body).toBeUndefined();
-    expect(replica.components("note/body")).toEqual([noteId]);
-    expect(replica.stats()).toMatchObject({ nonResident: 1, pinned: 0 });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(replica.get(noteId)?.data.fields.body).toBeUndefined();
+      expect(replica.components("note/body")).toEqual([noteId]);
+      expect(replica.stats()).toMatchObject({
+        nonResident: 1,
+        leases: { leased: 0, inactive: 0, resident: 0 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never retains a lazy component an update writes while it is closed", () => {
@@ -2183,37 +2272,43 @@ describe("replica: residency per component (#802)", () => {
   });
 
   it("is not resident, and journals nothing, when every component is lazy", async () => {
-    const replica = createReplica({
-      materialization: { holds: () => false },
-      pinnedTtlMs: 0,
-      readComponent: async () =>
-        entity({
-          id: "doc_1",
+    vi.useFakeTimers();
+    try {
+      const replica = createReplica({
+        materialization: { holds: () => false },
+        residencyTtlMs: 1_000,
+        readComponent: async () =>
+          entity({
+            id: "doc_1",
+            model: "document",
+            data: { fields: { text: leaf("body", "u_1", 10) } },
+            created_hlc: makeHlc(10),
+            updated_hlc: makeHlc(10),
+          }),
+      });
+      ingest(
+        replica,
+        patch({
+          actionId: "a_1",
+          updateId: "u_1",
+          entityId: "doc_1",
           model: "document",
-          data: { fields: { text: leaf("body", "u_1", 10) } },
-          created_hlc: makeHlc(10),
-          updated_hlc: makeHlc(10),
+          ms: 10,
+          fields: { text: leaf("body", "u_1", 10) },
         }),
-    });
-    ingest(
-      replica,
-      patch({
-        actionId: "a_1",
-        updateId: "u_1",
-        entityId: "doc_1",
-        model: "document",
-        ms: 10,
-        fields: { text: leaf("body", "u_1", 10) },
-      }),
-      1,
-    );
+        1,
+      );
 
-    expect(replica.get("doc_1")).toBeUndefined();
-    expect(replica.stats().pinned).toBe(0);
+      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
 
-    await replica.open("doc_1", "document/text");
-    expect(replica.isOpen("doc_1", "document/text")).toBe(true);
-    replica.close("doc_1", "document/text");
-    expect(replica.get("doc_1")).toBeUndefined();
+      await replica.read("doc_1", ["document/text"]);
+      expect(replica.get("doc_1")).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(replica.get("doc_1")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
