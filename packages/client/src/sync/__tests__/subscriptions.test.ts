@@ -19,11 +19,16 @@ import {
 } from "@ebbjs/core";
 import { defineComponent, defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica, type Revision } from "@ebbjs/storage/replica";
+import {
+  createReplica,
+  REPLICA_RECORD_FORMAT,
+  type Replica,
+  type Revision,
+} from "@ebbjs/storage/replica";
 
 import { createClient } from "../client";
 import { createSubscriptionRegistry } from "../subscriptions";
-import { callApplyAction, flushTasks, rowComponents, waitFor } from "../test-utils";
+import { callApplyAction, flushTasks, platformUpdate, rowComponents, waitFor } from "../test-utils";
 
 /** The heavy component: every other component of the row stays held. */
 const LAZY = "document/text";
@@ -152,8 +157,9 @@ describe("subscription registry: entries", () => {
 
     writeTitle(replica, "Renamed", 2);
 
-    // Every live entry is dispatched through the batch, so an untouched one
-    // advances; the one whose result has not settled stays behind.
+    // The batch never visits `other` — nothing it reads changed — so it reports
+    // the dispatcher's cursor, which is already past the batch; the one whose
+    // result has not settled stays behind.
     expect(other.cursor).toBe(replica.revision);
     expect(lagging.cursor).toBe(before);
   });
@@ -179,6 +185,69 @@ describe("subscription registry: entries", () => {
 
     expect(caughtUp.cursor).toBe(replica.revision);
     expect(lagging.cursor).toBe(start);
+  });
+
+  it("keeps a declared lag through a batch that touches the entry again", () => {
+    const { replica, subscriptions } = harness();
+    const lagging = subscriptions.open({
+      kind: "query",
+      key: "titles",
+      reads: ["document/title"],
+    });
+    const start = replica.revision;
+    lagging.onChange(() => lagging.seek(start));
+    writeTitle(replica, "Renamed", 2);
+
+    // A second relevant batch arrives while the run is still in flight: the
+    // entry is handed it, but a batch cannot claim the run has caught up.
+    writeTitle(replica, "Renamed again", 3);
+    expect(lagging.cursor).toBe(start);
+
+    lagging.seek(replica.revision);
+    expect(lagging.cursor).toBe(replica.revision);
+  });
+
+  it("recovers a cursor stranded by dispatch bookkeeping that throws", () => {
+    const { replica, subscriptions } = harness();
+    const entry = subscriptions.open({ kind: "row", row: "doc_1" });
+    const seen: Revision[] = [];
+    entry.onChange((_changes, revision) => seen.push(revision));
+    const before = replica.revision;
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const refresh = vi.spyOn(replica, "residentComponents").mockImplementation(() => {
+      throw new Error("resident boom");
+    });
+
+    writeTitle(replica, "Renamed", 2);
+
+    // The entry could not be evaluated: it is not handed the batch, and neither
+    // its cursor nor the revision it was dispatched through moves.
+    expect(seen).toEqual([]);
+    expect(entry.cursor).toBe(before);
+    expect(replica.revision).toBeGreaterThan(before);
+    expect(reported).toHaveBeenCalled();
+
+    // A load replaces the journal, so every entry is dispatched again. Because
+    // the failed batch never counted as dispatched, the entry still counts as
+    // caught up with what it was handed and its cursor moves with the gap.
+    refresh.mockRestore();
+    const gap = before + 4;
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      position: 0,
+      revision: gap,
+      entities: [],
+      componentVersions: {},
+    });
+    expect(seen).toEqual([gap]);
+    expect(entry.cursor).toBe(gap);
+
+    // And it stays current through a later batch that touches it instead of
+    // reporting `stale` from behind for the rest of its life.
+    writeTitle(replica, "Renamed again", 6);
+    expect(seen).toEqual([gap, replica.revision]);
+    expect(entry.cursor).toBe(replica.revision);
+    reported.mockRestore();
   });
 
   it("hands out introspection entries that own no share", () => {
@@ -325,6 +394,99 @@ describe("subscription registry: entries", () => {
     expect(subscriptions.stats().live).toBe(0);
     expect(replica.stats().leases.leased).toBe(0);
     await waitFor(() => replica.stats().leases.resident === 0);
+  });
+});
+
+describe("subscription registry: indexed dispatch (#938)", () => {
+  /** An empty record, so `load` replaces the journal with a gap. */
+  const emptyRecord = (revision: number) => ({
+    format: REPLICA_RECORD_FORMAT,
+    position: 0,
+    revision,
+    entities: [],
+    componentVersions: {},
+  });
+
+  it("notifies exactly the entries the batch touches", () => {
+    const { replica, subscriptions } = harness();
+    const title = subscriptions.open({ kind: "query", key: "titles", reads: ["document/title"] });
+    const model = subscriptions.open({ kind: "query", key: "documents", reads: ["document/*"] });
+    const row = subscriptions.open({ kind: "row", row: "doc_1" });
+    const otherRow = subscriptions.open({ kind: "row", row: "doc_9" });
+    const seen: string[] = [];
+    title.onChange(() => seen.push("title"));
+    model.onChange(() => seen.push("model"));
+    row.onChange(() => seen.push("row"));
+    otherRow.onChange(() => seen.push("otherRow"));
+    void flushTasks();
+
+    writeTitle(replica, "Renamed", 2);
+
+    // The title read, the whole-model read, and the row watch; not the row
+    // subscription on an id the batch never names.
+    expect(seen.sort()).toEqual(["model", "row", "title"]);
+    expect(otherRow.cursor).toBe(replica.revision);
+  });
+
+  it("reads the journal once for a batch, not once per entry", () => {
+    const { replica, subscriptions } = harness();
+    for (const key of ["a", "b", "c"]) {
+      subscriptions.open({ kind: "query", key, reads: ["document/*"] }).onChange(() => {});
+    }
+    const changesSince = vi.spyOn(replica, "changesSince");
+    changesSince.mockClear();
+
+    writeTitle(replica, "Renamed", 2);
+
+    expect(changesSince).toHaveBeenCalledTimes(1);
+    changesSince.mockRestore();
+  });
+
+  /** File `entityId` under one group, the write a membership row stands for. */
+  const writeMembership = (
+    replica: Replica,
+    id: string,
+    entityId: string,
+    groupId: string,
+    gsn: number,
+  ): Revision =>
+    replica.ingest(
+      { id: `a_${gsn}`, actor_id: "actor_1", hlc: makeHlc(gsn), gsn, updates: [] },
+      platformUpdate(id, "membership", "put", { entity_id: entityId, group_id: groupId }),
+      gsn,
+    );
+
+  it("touches a row subscription when its membership row changes", () => {
+    const { replica, subscriptions } = harness();
+    writeMembership(replica, "eg_1", "doc_1", "grp_1", 2);
+    const row = subscriptions.open({ kind: "row", row: "doc_1" });
+    const otherRow = subscriptions.open({ kind: "row", row: "doc_2" });
+    const seen: string[] = [];
+    row.onChange(() => seen.push("doc_1"));
+    otherRow.onChange(() => seen.push("doc_2"));
+
+    writeMembership(replica, "eg_2", "doc_2", "grp_1", 3);
+    expect(seen).toEqual(["doc_2"]);
+
+    // A member row is not the member's own row: the membership index is what
+    // keeps the member's subscription awake when its group set moves.
+    writeMembership(replica, "eg_1", "doc_1", "grp_2", 4);
+    expect(seen).toEqual(["doc_2", "doc_1"]);
+  });
+
+  it("re-runs every subscription after a journal gap", () => {
+    const { replica, subscriptions } = harness();
+    const title = subscriptions.open({ kind: "query", key: "titles", reads: ["document/title"] });
+    const row = subscriptions.open({ kind: "row", row: "doc_1" });
+    const seen: string[] = [];
+    title.onChange(() => seen.push("title"));
+    row.onChange(() => seen.push("row"));
+
+    // A load replaces the journal wholesale: the batch is empty and the
+    // revision advanced, so nothing can be narrowed.
+    replica.load(emptyRecord(replica.revision + 3));
+
+    expect(seen.sort()).toEqual(["row", "title"]);
   });
 });
 
