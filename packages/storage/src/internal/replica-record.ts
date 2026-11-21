@@ -4,8 +4,13 @@ import type { ReplicaRecord } from "../types/replica-store";
 /**
  * The record shape this build writes. A record written by another format reads
  * as absent, so a shape change cannot smuggle a stale base into the replica.
+ *
+ * 7 drops a pre-#943 record from the fast path. Format 6 could omit a row's
+ * lazily-loaded components and name them in `notResident`; nothing on the row
+ * said it was partial, and this build has no such map. Reading one would have
+ * adopted a partial row as whole, so the client replays the Action log instead.
  */
-export const REPLICA_RECORD_FORMAT = 6;
+export const REPLICA_RECORD_FORMAT = 7;
 
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
