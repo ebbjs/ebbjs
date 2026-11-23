@@ -3,13 +3,13 @@
  * subscriptions, and the only place a read's component values are claimed.
  *
  * A subscription owns the data it reads. Each entry carries its read set, its
- * own revision cursor, the result its consumer published, the leases its
+ * own subscription revision, the result its consumer published, the leases its
  * dependencies need, and whether it is still live. Claims are refcounted by the
  * replica's lease table, so two subscriptions reading one `(row, component)`
  * share one resident value and one residency entry.
  *
  * A released query result does not end (#941). It goes inactive and keeps its
- * result, its cursor, and the claims it owns for one residency TTL — the same
+ * result, its revision, and the claims it owns for one residency TTL — the same
  * lifetime a released component value gets — so a remount inside it re-reads
  * neither the store nor the source. When the TTL elapses the result and its
  * claims end together; a row entry, which holds a row for a mounted reader
@@ -24,18 +24,19 @@
  * entry was holding that the replica no longer has travels with the batch as
  * the unload signal, read off the residency table rather than the journal.
  *
- * One dispatcher owns the one journal cursor, reads the journal once per batch,
- * and advances to the batch revision before any listener runs, so a listener
- * that throws cannot leave an entry behind for a later batch to jump past; the
- * throw is reported and never skips a peer.
+ * One dispatcher owns the one journal position, reads the journal once per
+ * batch, and advances to the batch revision before any listener runs, so a
+ * listener that throws cannot leave an entry behind for a later batch to jump
+ * past; the throw is reported and never skips a peer.
  *
- * An entry's cursor is the revision its consumer has processed. Dispatch moves
- * it for a consumer that had caught up with the previous batch and only for
- * such a one, so a consumer whose result will lag — an async run in flight, or
- * an inactive result a relevant change left behind — keeps the revision its
+ * An entry's revision is the revision its consumer has processed. Dispatch
+ * moves it for a consumer that had caught up with the previous batch and only
+ * for such a one, and only when the consumer did not set it itself — by seeking
+ * or by holding — so a consumer whose result will lag (an async run in flight,
+ * or an inactive result a relevant change left behind) keeps the revision its
  * result reflects, and a `stale` status stays visible until a run settles and
  * seeks forward. An entry a batch does not touch is never visited: one that was
- * caught up at its last dispatch reports the dispatcher's own cursor, so an
+ * caught up at its last dispatch reports the dispatcher's own revision, so an
  * idle result stays `current` without a write per entry.
  *
  * A consumer owns the meaning of its own result: a query entry publishes its
@@ -151,14 +152,27 @@ export interface SubscriptionWriter<TResult = unknown> {
   /** The result the entry currently holds; `undefined` before the first. */
   readonly result: TResult | undefined;
   /**
+   * The revision this entry's published result reflects — the position its
+   * consumer has processed. Dispatch hands the entry the batch's revision, so
+   * a consumer that keeps the result it already published reads this to see
+   * the revision that result truly reflects, not the one dispatch moved to.
+   */
+  readonly reflected: Revision;
+  /**
    * The values this entry currently claims, one per row it touches: a source
    * row or a joined target, which need not be a row of the result.
    */
   readonly dependencies: readonly Dependency[];
   /** Publish the result this entry currently holds. */
   publish(result: TResult): void;
-  /** Advance the cursor: the entry has caught up through `revision`. */
+  /** Set the revision the entry's consumer has processed through. */
   seek(revision: Revision): void;
+  /**
+   * Keep the revision where it is: the result still reflects the one the entry
+   * holds, so dispatch must not advance it to the batch's on the consumer's
+   * behalf. A run that settles later seeks forward to the revision it produced.
+   */
+  hold(): void;
   /** Hold exactly these values, releasing the ones dropped. */
   depend(dependencies: readonly Dependency[]): void;
 }
@@ -181,13 +195,15 @@ export interface SubscriptionSnapshot<TResult = unknown, TConsumer = unknown> {
   /** The components this subscription reads: declared plus depended on. */
   readonly reads: ReadSet;
   /**
-   * The revision this entry's consumer has processed. Dispatch advances it for
-   * a caught-up entry before its listeners run; a consumer whose result still
-   * reflects an older revision (an async run in flight) seeks back to it and
-   * holds it there until the run settles. An entry no batch has touched since
-   * it was caught up reports the dispatcher's cursor instead of a stored one.
+   * The subscription revision: the revision this entry's consumer has
+   * processed. Dispatch advances it for an entry that was caught up, but a
+   * consumer whose result still reflects an older revision (an async run in
+   * flight, a stale inactive result) holds it there until the run settles. An
+   * entry no batch has touched since it was caught up reports the dispatcher's
+   * revision instead of a stored one; {@link SubscriptionWriter.reflected} is
+   * always the revision its result reflects.
    */
-  readonly cursor: Revision;
+  readonly revision: Revision;
   /** The result the consumer last published; `undefined` before the first. */
   readonly result: TResult | undefined;
   /**
@@ -277,7 +293,7 @@ export interface LeaseWatchdogOptions {
 
 export interface SubscriptionRegistryOptions {
   /**
-   * How long a released query result stays warm: its result, its cursor, and
+   * How long a released query result stays warm: its result, its revision, and
    * the claims it owns. Defaults to the storage package's
    * `DEFAULT_RESIDENCY_TTL_MS` (60s), the same one lifetime a released
    * component value gets, so one answer covers both. A non-positive or
@@ -292,7 +308,7 @@ export interface SubscriptionRegistryOptions {
 export interface SubscriptionRegistry {
   /**
    * Find or create the entry for `spec`, counting one subscriber. Two calls on
-   * one key share one entry, one cursor, and one lease set. An inactive entry
+   * one key share one entry, one revision, and one lease set. An inactive entry
    * is taken back as it stands — same result, same claims, same consumer state
    * — and `consumer` is only stored when this call creates the entry.
    */
@@ -475,20 +491,27 @@ interface Entry<TResult, TConsumer = unknown> {
   readonly consumer: TConsumer;
   readonly listeners: Set<ChangeListener<TResult>>;
   reads: ReadSet;
-  /** The revision this entry's consumer has processed. */
-  cursor: Revision;
+  /** The revision this entry's consumer has processed: its result reflects it. */
+  revision: Revision;
+  /**
+   * Whether the listener in flight set the revision itself, by seeking or by
+   * holding. An entry that neither did is caught up with the batch dispatch
+   * handed it, so its revision moves with the batch after the listener runs.
+   */
+  declared: boolean;
   /**
    * The revision of the last batch dispatch handed this entry and finished
    * evaluating. Only a touched entry gets one, which is what tells an entry no
-   * batch has touched since it was caught up — its cursor may derive from the
+   * batch has touched since it was caught up — its revision may derive from the
    * dispatcher — apart from one whose consumer declared lag or whose last batch
    * could not be evaluated.
    */
   dispatched: Revision;
   /**
-   * Whether dispatch handed this entry a batch it could not finish. Its cursor
-   * and `dispatched` both stay behind, so it must not derive its cursor from
-   * the dispatcher's until a later dispatch succeeds and clears this.
+   * Whether dispatch handed this entry a batch it could not finish. Its
+   * revision and `dispatched` both stay behind, so it must not derive its
+   * revision from the dispatcher's until a later dispatch succeeds and clears
+   * this.
    */
   stranded: boolean;
   result: TResult | undefined;
@@ -783,14 +806,14 @@ export const createSubscriptionRegistry = (
     get reads() {
       return entry.reads;
     },
-    get cursor() {
+    get revision() {
       // Level with the last batch it was handed: the entry is untouched by
-      // anything since, so the dispatcher's cursor is the honest one. Behind
+      // anything since, so the dispatcher's revision is the honest one. Behind
       // it: the consumer declared the revision its result still reflects, or
       // dispatch could not finish the batch it was handed.
-      return entry.stranded || entry.cursor < entry.dispatched
-        ? entry.cursor
-        : Math.max(entry.cursor, dispatcher.cursor());
+      return entry.stranded || entry.revision < entry.dispatched
+        ? entry.revision
+        : Math.max(entry.revision, dispatcher.revision());
     },
     get result() {
       return entry.result;
@@ -821,6 +844,9 @@ export const createSubscriptionRegistry = (
     get result() {
       return entry.result;
     },
+    get reflected() {
+      return entry.revision;
+    },
     get dependencies() {
       return entry.dependencies;
     },
@@ -828,7 +854,12 @@ export const createSubscriptionRegistry = (
       if (entry.state !== "terminal") entry.result = result;
     },
     seek: (revision: Revision) => {
-      if (entry.state !== "terminal") entry.cursor = revision;
+      if (entry.state === "terminal") return;
+      entry.revision = revision;
+      entry.declared = true;
+    },
+    hold: () => {
+      entry.declared = true;
     },
     depend: (dependencies: readonly Dependency[]) => {
       depend(entry, dependencies);
@@ -836,11 +867,15 @@ export const createSubscriptionRegistry = (
   });
 
   /**
-   * Hand one touched entry its batch. The entry is level with the batch once its
-   * own bookkeeping has succeeded, but its cursor moves only if the consumer had
-   * caught up with the previous one, and that happens before any listener runs:
-   * a listener that throws cannot leave a caught-up entry behind for a later
-   * batch to jump past, and a batch cannot report a lagging one caught up.
+   * Hand one touched entry its batch.
+   *
+   * The batch moves the entry's revision only for a consumer that was caught up
+   * with the previous one, and only after its listeners run, unless one of them
+   * set the revision itself: a listener that throws cannot leave a caught-up
+   * entry behind for a later batch to jump past, and a batch cannot report a
+   * lagging one caught up. A consumer whose result still reflects an older
+   * revision holds it, so the lag stays visible until a run settles and seeks
+   * forward.
    *
    * An inactive result is still dispatched: a change that touches what it read
    * must reach it so a remount knows the result is stale without re-reading the
@@ -851,8 +886,9 @@ export const createSubscriptionRegistry = (
     // Caught up when the batch began: the consumer has processed everything the
     // entry was handed so far. A consumer that declared lag — its result still
     // reflects an older revision, an async run in flight — is not, and keeps
-    // its cursor until the run settles and seeks forward.
-    const caughtUp = entry.cursor >= entry.dispatched;
+    // its revision until the run settles and seeks forward.
+    const caughtUp = entry.revision >= entry.dispatched;
+    entry.declared = false;
     let lost: readonly string[] = [];
     try {
       // What the entry held and the replica no longer has, read off the lease
@@ -875,7 +911,7 @@ export const createSubscriptionRegistry = (
       }
     } catch (err) {
       // Dispatch bookkeeping is as load-bearing as a listener here: one entry
-      // it cannot evaluate must not starve the rest. The cursor and the
+      // it cannot evaluate must not starve the rest. The revision and the
       // dispatch revision both stay behind, and the entry is marked stranded so
       // it cannot report the batch it never evaluated as processed; the next
       // gap hands it the batch again as caught up, and that clears the mark.
@@ -886,7 +922,6 @@ export const createSubscriptionRegistry = (
     }
     entry.dispatched = batch.revision;
     entry.stranded = false;
-    if (caughtUp) entry.cursor = batch.revision;
     const writer = writerOf(entry);
     // A listener may detach a peer, so iterate a snapshot, and report a failure
     // instead of letting one consumer skip the rest.
@@ -898,6 +933,11 @@ export const createSubscriptionRegistry = (
         console.error("[Subscriptions] change listener threw:", err);
       }
     }
+    // A consumer that neither moved nor held its revision has processed the
+    // batch, so its result is as current as the batch. This runs after the
+    // listeners, including a throw, so an entry dispatch reached is never left
+    // behind for a later batch to jump past.
+    if (caughtUp && !entry.declared) entry.revision = batch.revision;
   };
 
   const membershipSubjects = (change: ReplicaChange): readonly string[] => {
@@ -942,7 +982,12 @@ export const createSubscriptionRegistry = (
         if (writable()) entry.result = result;
       },
       seek: (revision: Revision) => {
-        if (writable()) entry.cursor = revision;
+        if (!writable()) return;
+        entry.revision = revision;
+        entry.declared = true;
+      },
+      hold: () => {
+        entry.declared = true;
       },
       depend: (dependencies: readonly Dependency[]) => {
         depend(entry, dependencies);
@@ -954,6 +999,13 @@ export const createSubscriptionRegistry = (
           entry.listeners.delete(listener);
         };
       },
+    });
+    // `Object.assign` copies a value, not an accessor, so the one field the
+    // handle reads live is defined on its own.
+    Object.defineProperty(handle, "reflected", {
+      get: () => entry.revision,
+      enumerable: true,
+      configurable: true,
     });
     return handle;
   };
@@ -968,7 +1020,7 @@ export const createSubscriptionRegistry = (
       if (existing !== undefined) {
         if (existing.state === "inactive") {
           // The remount inside the TTL: take the entry back as it stands, so
-          // the result, its cursor, and the claims it owns all survive.
+          // the result, its revision, and the claims it owns all survive.
           clearRetention(existing);
           existing.refs = 1;
           existing.state = "live";
@@ -995,7 +1047,8 @@ export const createSubscriptionRegistry = (
         consumer: consumer as TConsumer,
         listeners: new Set(),
         reads: compileReadComponents(declaredReads(spec), declaredSources(spec)),
-        cursor: replica.revision,
+        revision: replica.revision,
+        declared: false,
         dispatched: replica.revision,
         stranded: false,
         result: undefined,

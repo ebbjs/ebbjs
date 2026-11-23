@@ -20,6 +20,8 @@ import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema"
 
 import { createClient } from "../client";
 import { createQueryCache, type QuerySource } from "../query-cache";
+import { createSubscriptionRegistry } from "../subscriptions";
+import { queryCacheKey } from "../selection";
 import { emptyQuery, type Query } from "../query";
 import { callApplyAction, flushTasks, linkAction, rowComponents } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
@@ -626,6 +628,31 @@ describe("query cache: patch source contract (#942)", () => {
         .getSnapshot()
         .data?.map((candidate) => `${candidate.id}:${String(candidate.data.fields.title?.value)}`),
     ).toEqual(["todo_1:One!", "todo_2:Two!"]);
+    detach();
+  });
+
+  it("advances the entry's revision to the patched batch's", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One" });
+    const registry = createSubscriptionRegistry(replica, { residencyTtlMs: 1_000 });
+    const cache = createQueryCache(replica, registry);
+    const source = countingSource(replica, reRead(replica));
+    const store = cache.watch("rows", todoQuery(), source);
+    const key = queryCacheKey("rows", todoQuery());
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+    const settled = replica.revision;
+    expect(registry.peek("query", key)?.revision).toBe(settled);
+
+    write(replica, { todo_1: "One!" });
+
+    // The patch is the run it replaces, so it moves the entry's revision the
+    // way a settle does: the entry is current at the batch it patched.
+    expect(source.patches).toBe(1);
+    expect(source.runs).toBe(1);
+    expect(replica.revision).toBeGreaterThan(settled);
+    expect(registry.peek("query", key)?.revision).toBe(replica.revision);
+    expect(store.getSnapshot().status).toBe("current");
     detach();
   });
 

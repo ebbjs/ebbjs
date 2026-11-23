@@ -2,7 +2,7 @@
  * Unit tests for the subscription registry (#937).
  *
  * One registry holds every live query and row subscription: its read set, its
- * own revision cursor, the leases its dependencies need, and whether it is
+ * own subscription revision, the leases its dependencies need, and whether it is
  * still live. Claims are refcounted by `(row, component)`, so two
  * subscriptions reading one value share it, and a claim is released — starting
  * the residency grace period — when the subscription ends.
@@ -146,12 +146,12 @@ describe("subscription registry: entries", () => {
     expect(row.reads.components.has(LAZY)).toBe(true);
     expect(query.state).toBe("live");
     expect(row.state).toBe("live");
-    expect(query.cursor).toBe(replica.revision);
-    expect(row.cursor).toBe(replica.revision);
+    expect(query.revision).toBe(replica.revision);
+    expect(row.revision).toBe(replica.revision);
     expect(subscriptions.stats()).toMatchObject({ live: 2, byKind: { query: 1, row: 1 } });
   });
 
-  it("tracks a revision cursor per entry", () => {
+  it("tracks a subscription revision per entry", () => {
     const { replica, subscriptions } = harness();
     const lagging = subscriptions.open({
       kind: "query",
@@ -167,10 +167,10 @@ describe("subscription registry: entries", () => {
     writeTitle(replica, "Renamed", 2);
 
     // The batch never visits `other` — nothing it reads changed — so it reports
-    // the dispatcher's cursor, which is already past the batch; the one whose
+    // the dispatcher's revision, which is already past the batch; the one whose
     // result has not settled stays behind.
-    expect(other.cursor).toBe(replica.revision);
-    expect(lagging.cursor).toBe(before);
+    expect(other.revision).toBe(replica.revision);
+    expect(lagging.revision).toBe(before);
   });
 
   it("advances only the entries that were caught up", () => {
@@ -186,14 +186,14 @@ describe("subscription registry: entries", () => {
     // still reflects `start` until that run settles.
     lagging.onChange((_changes, _revision) => lagging.seek(start));
     write(replica, "doc_1", "document", "title", "Renamed", 2);
-    expect(lagging.cursor).toBe(start);
+    expect(lagging.revision).toBe(start);
 
     // A peer write touches the other entry only. The pending entry must not be
     // advanced past the change its run has not picked up yet.
     write(replica, "note_1", "note", "title", "Unrelated", 3);
 
-    expect(caughtUp.cursor).toBe(replica.revision);
-    expect(lagging.cursor).toBe(start);
+    expect(caughtUp.revision).toBe(replica.revision);
+    expect(lagging.revision).toBe(start);
   });
 
   it("keeps a declared lag through a batch that touches the entry again", () => {
@@ -210,13 +210,13 @@ describe("subscription registry: entries", () => {
     // A second relevant batch arrives while the run is still in flight: the
     // entry is handed it, but a batch cannot claim the run has caught up.
     writeTitle(replica, "Renamed again", 3);
-    expect(lagging.cursor).toBe(start);
+    expect(lagging.revision).toBe(start);
 
     lagging.seek(replica.revision);
-    expect(lagging.cursor).toBe(replica.revision);
+    expect(lagging.revision).toBe(replica.revision);
   });
 
-  it("recovers a cursor stranded by dispatch bookkeeping that throws", () => {
+  it("recovers a revision stranded by dispatch bookkeeping that throws", () => {
     const { replica, subscriptions } = harness();
     const entry = subscriptions.open({ kind: "row", row: "doc_1" });
     const seen: Revision[] = [];
@@ -230,15 +230,15 @@ describe("subscription registry: entries", () => {
     writeTitle(replica, "Renamed", 2);
 
     // The entry could not be evaluated: it is not handed the batch, and neither
-    // its cursor nor the revision it was dispatched through moves.
+    // its subscription revision nor the revision it was dispatched through moves.
     expect(seen).toEqual([]);
-    expect(entry.cursor).toBe(before);
+    expect(entry.revision).toBe(before);
     expect(replica.revision).toBeGreaterThan(before);
     expect(reported).toHaveBeenCalled();
 
     // A load replaces the journal, so every entry is dispatched again. Because
     // the failed batch never counted as dispatched, the entry still counts as
-    // caught up with what it was handed and its cursor moves with the gap.
+    // caught up with what it was handed and its revision moves with the gap.
     refresh.mockRestore();
     const gap = before + 4;
     replica.load({
@@ -249,13 +249,13 @@ describe("subscription registry: entries", () => {
       componentVersions: {},
     });
     expect(seen).toEqual([gap]);
-    expect(entry.cursor).toBe(gap);
+    expect(entry.revision).toBe(gap);
 
     // And it stays current through a later batch that touches it instead of
     // reporting `stale` from behind for the rest of its life.
     writeTitle(replica, "Renamed again", 6);
     expect(seen).toEqual([gap, replica.revision]);
-    expect(entry.cursor).toBe(replica.revision);
+    expect(entry.revision).toBe(replica.revision);
     reported.mockRestore();
   });
 
@@ -305,8 +305,8 @@ describe("subscription registry: entries", () => {
     expect(seen).toEqual([replica.revision]);
     // A throw cannot leave an entry behind for a later batch to jump past:
     // the batch is dispatched through every live entry first.
-    expect(throwing.cursor).toBe(replica.revision);
-    expect(peer.cursor).toBe(replica.revision);
+    expect(throwing.revision).toBe(replica.revision);
+    expect(peer.revision).toBe(replica.revision);
     expect(before).toBeLessThan(replica.revision);
     expect(reported).toHaveBeenCalled();
     reported.mockRestore();
@@ -583,7 +583,7 @@ describe("subscription registry: indexed dispatch (#938)", () => {
     // The title read, the whole-model read, and the row watch; not the row
     // subscription on an id the batch never names.
     expect(seen.sort()).toEqual(["model", "row", "title"]);
-    expect(otherRow.cursor).toBe(replica.revision);
+    expect(otherRow.revision).toBe(replica.revision);
   });
 
   it("reads the journal once for a batch, not once per entry", () => {

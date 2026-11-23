@@ -837,6 +837,32 @@ describe("query cache: one inactive lifetime (#941)", () => {
     off();
   });
 
+  it("keeps an inactive result stale across a batch it does not read", async () => {
+    const { replica } = readBackReplica();
+    const { cache, registry } = cacheOver(replica, 100);
+    const counter = { runs: 0 };
+    const source = readingSource(replica, counter);
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await waitFor(() => store.getSnapshot().status === "current");
+    detach();
+    const settled = replica.revision;
+
+    // A relevant change marks the inactive result stale without running it: the
+    // entry holds its revision back so the status stays honest.
+    ingest(replica, "todo", "todo_2");
+    expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
+    expect(counter.runs).toBe(1);
+    expect(registry.peek("query", queryCacheKey("rows", todoQuery()))?.revision).toBe(settled);
+
+    // A change to another model reaches nothing this result reads, and must not
+    // let the inactive result look current again.
+    write(replica, "note_1", "note", { title: "Peer" });
+    expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
+    expect(counter.runs).toBe(1);
+    expect(registry.peek("query", queryCacheKey("rows", todoQuery()))?.revision).toBe(settled);
+  });
+
   it("re-runs once on remount when a relevant change landed while inactive", async () => {
     const { replica, reads } = readBackReplica();
     const { cache } = cacheOver(replica, 100);

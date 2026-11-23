@@ -343,8 +343,12 @@ _Avoid_: listener, watcher, observer, pin
 
 **Subscription revision**:
 The Revision a subscription's result reflects — the position its consumer has
-processed. Dispatch advances it only for an entry that was caught up, so an
-in-flight run or a stale inactive result keeps its older value visible.
+processed. Dispatch advances it only for an entry that was caught up and did not
+set it itself, so an in-flight run or a stale inactive result keeps its older
+value visible. It is the subscription's one revision: `Subscription.revision`
+reports it (the dispatcher's own for an entry no batch has touched since it
+caught up), and `SubscriptionWriter.reflected` is always the revision the
+published result reflects.
 _Avoid_: cursor, watermark, offset
 
 **Dispatch revision**:

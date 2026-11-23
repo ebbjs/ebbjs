@@ -1,7 +1,7 @@
 /**
  * Dependency-indexed change dispatch (#938).
  *
- * One dispatcher owns one journal cursor and a set of inverted indices: which
+ * One dispatcher owns one journal position and a set of inverted indices: which
  * subscriptions read a component, read a model whole, watch a row, or read a
  * derived index (`index:<name>` — a membership subject, a group scope). A batch
  * then costs the subscriptions it touches plus one lookup per dependency kind
@@ -10,9 +10,10 @@
  * The dispatcher is the only place a batch is read: `changesSince` is called
  * once, and the entries that survive the indices are the ones any work
  * happens for. An entry a batch does not touch is never visited — a caught-up
- * one's cursor derives from the dispatcher's own, so the batch costs it nothing.
+ * one's revision derives from the dispatcher's own, so the batch costs it
+ * nothing.
  *
- * Gaps. A cursor below the retained window, or an empty batch on an advanced
+ * Gaps. A revision below the retained window, or an empty batch on an advanced
  * revision (a replica `load` replaces the journal), cannot be narrowed against:
  * every subscription may have changed, so every one is handed the batch.
  *
@@ -86,9 +87,9 @@ export interface ChangeBatch {
 }
 
 /**
- * The journal a dispatcher reads. The replica satisfies this: one cursor, the
- * revision it is at, the oldest revision the retained window still answers,
- * and a notification per mutating call.
+ * The journal a dispatcher reads. The replica satisfies this: one change
+ * reader, the revision it is at, the oldest revision the retained window still
+ * answers, and a notification per mutating call.
  */
 export interface ChangeJournal {
   readonly revision: Revision;
@@ -126,7 +127,7 @@ export interface ChangeDispatcher<T> {
   /** How many subscriptions are indexed. */
   size(): number;
   /** The revision the dispatcher has been dispatched through. */
-  cursor(): Revision;
+  revision(): Revision;
   /** Counters from the last batch dispatched. */
   stats(): DispatchCounts;
   /** Stop dispatching and drop every entry. */
@@ -195,7 +196,7 @@ export const createChangeDispatcher = <T>(
   /** `index:<name>` → key → entries. */
   const byIndex = new Map<string, Map<string, Set<T>>>();
   let nextSeq = 0;
-  let cursor: Revision = journal.revision;
+  let dispatched: Revision = journal.revision;
   let counts: DispatchCounts = { touched: 0, lookups: 0, scanWork: 0 };
   let closed = false;
 
@@ -256,18 +257,18 @@ export const createChangeDispatcher = <T>(
   const dispatch = (): void => {
     if (closed) return;
     const revision = journal.revision;
-    if (revision === cursor) return;
+    if (revision === dispatched) return;
     if (entries.size === 0) {
-      cursor = revision;
+      dispatched = revision;
       counts = { touched: 0, lookups: 0, scanWork: 0 };
       return;
     }
-    const changes = journal.changesSince(cursor);
-    // Nothing to narrow against: the cursor fell below the retained window, or
-    // the journal was replaced wholesale (a `load`) and a revision jump is all
-    // that is left of the batch.
-    const gap = cursor < journal.changeFloor || changes.length === 0;
-    cursor = revision;
+    const changes = journal.changesSince(dispatched);
+    // Nothing to narrow against: the revision fell below the retained window,
+    // or the journal was replaced wholesale (a `load`) and a revision jump is
+    // all that is left of the batch.
+    const gap = dispatched < journal.changeFloor || changes.length === 0;
+    dispatched = revision;
     let found: { touched: Set<T>; lookups: number };
     try {
       found = gap ? { touched: new Set(entries.keys()), lookups: 0 } : touchedBy(changes);
@@ -318,7 +319,7 @@ export const createChangeDispatcher = <T>(
     },
     remove: drop,
     size: () => entries.size,
-    cursor: () => cursor,
+    revision: () => dispatched,
     stats: () => counts,
     close: () => {
       if (closed) return;
