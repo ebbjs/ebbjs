@@ -131,6 +131,40 @@ export interface ReplicaStats {
 }
 
 /**
+ * Serialized bytes the replica retains, by category. Each figure is the UTF-8
+ * length of that category's JSON: a stable, reproducible size, not the V8 heap
+ * it occupies (a heap account belongs to the harness that can force GC).
+ *
+ * The categories partition the base rows and the state around them:
+ *
+ * - `rows` — the row envelopes: id, model, existence, timestamps, last gsn.
+ * - `values` — every component value with its per-field `update_id`/`hlc`
+ *   envelope, together with the row's `data` wrapper. A row's `rows + values`
+ *   is therefore its JSON minus the 8-byte `,"data":` separator.
+ * - `index` — the model, component, and adjacency indices, and the declared
+ *   version stamped on each component.
+ * - `journal` — the retained change journal, including a discarded prefix a
+ *   trim has not compacted yet.
+ * - `unconfirmedWrites` — optimistic writes the server has not echoed, the
+ *   composed views cached for their rows, and updates waiting for a base row.
+ *   A server-confirmed Update buffered behind a cold read is not counted: it
+ *   belongs to the base's next settle, not to the overlay.
+ *
+ * Residency bookkeeping (the lease table, the store-row set, reads in flight)
+ * is not a category: it holds no row or value, and its size tracks the number
+ * of claims rather than the data.
+ */
+export interface ReplicaBytes {
+  readonly rows: number;
+  readonly values: number;
+  readonly index: number;
+  readonly journal: number;
+  readonly unconfirmedWrites: number;
+  /** The categories above, summed. */
+  readonly total: number;
+}
+
+/**
  * Adjacency read key for the replica's relationship reads. `sourceId`
  * reads forward — the live targets on the source row's `ebb/link`
  * component; `targetId` reads reverse — the sources the reverse index files
@@ -238,6 +272,12 @@ export interface Replica {
    */
   changesSince(revision: Revision): readonly ReplicaChange[];
   stats(): ReplicaStats;
+  /**
+   * Serialized bytes this replica retains, by category. Diagnostic, and not a
+   * read path: it serializes every retained structure, so it costs more than
+   * {@link stats} does.
+   */
+  bytes(): ReplicaBytes;
 
   /**
    * Distinct live targets out of `(as, type, sourceId)` — a read of the

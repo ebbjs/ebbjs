@@ -5,8 +5,9 @@
  * the workspace shape from the epic #495 spike, so #503's numbers are
  * comparable with it: resident metadata footprint, traversal cost (wall-clock and
  * rows touched), search over resident pages, the one-pass projection build, the
- * store-backed body path, patched versus re-run changes, change dispatch, and
- * the residency counters a remount and a batch expose.
+ * store-backed body path, patched versus re-run changes, change dispatch, the
+ * residency counters a remount and a batch expose, and the replica's retained
+ * bytes split by memory category (#966).
  *
  * The replica is seeded directly: one `ReplicaRecord` is built in memory and
  * handed to `replica.load(record)`. Seeding through the memory adapter's
@@ -25,7 +26,7 @@
 import { arch, cpus, platform, release } from "node:os";
 import { Type } from "@sinclair/typebox";
 import { carriesComponent, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
-import { createReplica } from "@ebbjs/storage/replica";
+import { createReplica, DEFAULT_JOURNAL_CAPACITY, jsonBytes } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
@@ -47,6 +48,7 @@ import {
   maxOf,
   median,
   minOf,
+  measureInactiveResult,
   replicaAdjacency,
   replicaRowReader,
   sampleLatency,
@@ -105,7 +107,6 @@ const grouped = (value: number): string =>
 const fixed = (value: number, digits: number): string =>
   Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 
-const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const kb = (bytes: number): string => `${(bytes / 1024).toFixed(1)} KB`;
 const pct = (part: number, whole: number): string =>
@@ -1082,6 +1083,160 @@ const measureDispatch = (): {
 const dispatch = measureDispatch();
 
 // ---------------------------------------------------------------------------
+// 8. Memory by category (#966)
+// ---------------------------------------------------------------------------
+
+/** Unconfirmed writes the overlay scenario holds: one title edit per page. */
+const BYTES_OPTIMISTIC_ACTIONS = 100;
+
+interface MemoryCategories {
+  /** The loaded replica, before any write. */
+  readonly loaded: { readonly rows: number; readonly values: number; readonly index: number };
+  /** The journal at its retained capacity, after the ingest and overlay batches. */
+  readonly journal: number;
+  readonly journalChanges: number;
+  /** Overlay writes, their composed views, and orphans after the optimistic batch. */
+  readonly unconfirmedWrites: number;
+  readonly unconfirmedActions: number;
+  /** A released rows result, still inside its residency period. */
+  readonly inactiveResults: number;
+  readonly inactiveEntries: number;
+  readonly inactiveRows: number;
+  /** The full-row `ReplicaRecord` `toRecord()` serializes. */
+  readonly snapshot: number;
+}
+
+/**
+ * The replica's account covers the state it owns; an inactive result and the
+ * snapshot it can write belong to the client around it, so they are measured
+ * here. One scratch replica keeps all seven figures on the same loaded
+ * workspace and leaves the timed replica untouched.
+ */
+const measureMemoryCategories = (): MemoryCategories => {
+  const scratch = createReplica(loadOptions);
+  scratch.load(workspace.record);
+
+  const founded = scratch.bytes();
+  const loaded = { rows: founded.rows, values: founded.values, index: founded.index };
+  if (founded.journal !== 0 || founded.unconfirmedWrites !== 0) {
+    throw new Error("memory categories: a loaded replica already retained writes");
+  }
+  const snapshot = jsonBytes(scratch.toRecord());
+
+  // Fill the default journal window with real changes: one title edit per
+  // Action. This is what makes the journal category non-zero.
+  let position = 0;
+  for (let index = 0; index < DEFAULT_JOURNAL_CAPACITY; index += 1) {
+    position += 1;
+    const id = pageId(index % Math.max(1, config.n));
+    scratch.ingest(
+      {
+        id: `a_memory_${position}`,
+        actor_id: "bench",
+        hlc: makeHlc(position),
+        gsn: position,
+        updates: [],
+      },
+      [
+        {
+          id: `u_memory_${position}`,
+          subject_id: id,
+          component: "page/title",
+          method: "replace",
+          data: {
+            value: `Memory ${position}`,
+            update_id: `u_memory_${position}`,
+            hlc: makeHlc(position),
+          },
+        },
+      ],
+      position,
+    );
+  }
+  const afterIngests = scratch.bytes();
+  if (afterIngests.journal === 0) {
+    throw new Error("memory categories: the journal retained nothing");
+  }
+
+  // One unconfirmed write per page; each also caches a composed view.
+  for (let index = 0; index < BYTES_OPTIMISTIC_ACTIONS; index += 1) {
+    position += 1;
+    scratch.optimistic({
+      id: `a_local_${position}`,
+      actor_id: "bench",
+      hlc: makeHlc(position),
+      gsn: position,
+      updates: [
+        {
+          id: `u_local_${position}`,
+          subject_id: pageId(index % Math.max(1, config.n)),
+          component: "page/title",
+          method: "replace",
+          data: {
+            value: `Local ${position}`,
+            update_id: `u_local_${position}`,
+            hlc: makeHlc(position),
+          },
+        },
+      ],
+    });
+  }
+  const afterOverlay = scratch.bytes();
+  if (afterOverlay.unconfirmedWrites === 0) {
+    throw new Error("memory categories: the optimistic batch retained nothing");
+  }
+  const journalChanges = scratch.stats().changes;
+  if (journalChanges === 0 || journalChanges > DEFAULT_JOURNAL_CAPACITY) {
+    throw new Error(`memory categories: ${journalChanges} journal changes retained`);
+  }
+
+  const pagePlan = planQuery(emptyQuery("page"));
+  const measuredPages = scratch.stats().byModel["page"] ?? 0;
+  const inactive = measureInactiveResult(scratch, emptyQuery("page"), () =>
+    executePlan(pagePlan, createReplicaExecutor(scratch)).map(pageResult),
+  );
+  if (inactive.entries !== 1) {
+    throw new Error(`memory categories: ${inactive.entries} inactive results, expected 1`);
+  }
+  if (inactive.rows !== measuredPages) {
+    throw new Error(
+      `memory categories: the inactive result held ${inactive.rows} of ${measuredPages} rows`,
+    );
+  }
+
+  return {
+    loaded,
+    // The optimistic batch trims the oldest journal entries, so the reported
+    // window is the final state's, not the pre-overlay one.
+    journal: afterOverlay.journal,
+    journalChanges,
+    unconfirmedWrites: afterOverlay.unconfirmedWrites,
+    unconfirmedActions: BYTES_OPTIMISTIC_ACTIONS,
+    inactiveResults: inactive.bytes,
+    inactiveEntries: inactive.entries,
+    inactiveRows: inactive.rows,
+    snapshot,
+  };
+};
+
+log("measuring memory by category");
+const memory = measureMemoryCategories();
+const loadedBytes = memory.loaded.rows + memory.loaded.values + memory.loaded.index;
+const steadyBytes =
+  loadedBytes + memory.journal + memory.unconfirmedWrites + memory.inactiveResults;
+// The two base categories partition each loaded row's JSON apart from the
+// 8-byte `,"data":` separator they share. Recount per row: section 1a's totals
+// serialize arrays, whose commas and brackets a row sum does not carry.
+const splitJson = memory.loaded.rows + memory.loaded.values;
+const expectedSplit =
+  residentRows.reduce((sum, row) => sum + jsonBytes(row), 0) - 8 * residentRows.length;
+if (splitJson !== expectedSplit) {
+  throw new Error(
+    `memory categories: rows + values is ${splitJson} bytes, expected ${expectedSplit}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 
@@ -1482,11 +1637,89 @@ push(
   `| index lookups / batch | ${grouped(dispatch.lookups)} |`,
   `| scan work avoided (changes × subscriptions) | ${grouped(dispatch.scanWork)} |`,
   "",
+);
+
+// 8. Memory by category
+const memoryRows: readonly (readonly [string, number, string])[] = [
+  [
+    "rows — row envelopes (id, model, existence, timestamps, `last_gsn`)",
+    memory.loaded.rows,
+    `${grouped(workspace.counts.residentRows)} loaded rows`,
+  ],
+  [
+    "in-memory values — every component value with its `update_id`/`hlc` envelope",
+    memory.loaded.values,
+    "the same rows",
+  ],
+  [
+    "index — model, component, and adjacency indices, plus version stamps",
+    memory.loaded.index,
+    "built by the load",
+  ],
+  [
+    "journal — retained change entries",
+    memory.journal,
+    `${grouped(memory.journalChanges)} retained at the default capacity, after ${grouped(
+      DEFAULT_JOURNAL_CAPACITY + BYTES_OPTIMISTIC_ACTIONS,
+    )} changes`,
+  ],
+  [
+    "unconfirmed writes — overlay, its composed views, and orphans",
+    memory.unconfirmedWrites,
+    `${grouped(memory.unconfirmedActions)} optimistic Actions the server has not echoed`,
+  ],
+  [
+    "inactive results — a released result's projected rows",
+    memory.inactiveResults,
+    `${grouped(memory.inactiveEntries)} entry holding ${grouped(memory.inactiveRows)} projected rows`,
+  ],
+  [
+    "snapshot — the full-row `ReplicaRecord` `toRecord()` serializes",
+    memory.snapshot,
+    "the loaded base, versions included",
+  ],
+];
+
+push(
+  "## 8. Memory by category (#966)",
+  "",
+  "The replica's account covers what it owns; an inactive query result and the snapshot it can",
+  "write belong to the client around it, so all seven are measured here. UTF-8 bytes of JSON,",
+  "one throwaway replica loaded from the fixture's record, so every figure describes the same",
+  "workspace. This is a category account, not a heap measurement (section 1b is the heap",
+  "account): the units compare with section 1a's row JSON and with each other, not with the V8",
+  "total.",
+  "",
+  "| category | bytes | size | measured on |",
+  "| --- | ---: | ---: | --- |",
+  ...memoryRows.map(
+    ([label, value, scope]) => `| ${label} | ${bytes(value)} | ${mb(value)} | ${scope} |`,
+  ),
+  "",
+  "| total | bytes | size |",
+  "| --- | ---: | ---: |",
+  `| **loaded replica** (rows + in-memory values + index) | **${bytes(loadedBytes)}** | **${mb(loadedBytes)}** |`,
+  `| **steady state** (loaded replica + journal + unconfirmed writes + inactive result) | **${bytes(steadyBytes)}** | **${mb(steadyBytes)}** |`,
+  `| snapshot written on top (not resident unless persisting) | ${bytes(memory.snapshot)} | ${mb(memory.snapshot)} |`,
+  "",
+  '`rows + values` partitions each resident row\'s JSON apart from the 8-byte `,"data":`',
+  "separator the two share; section 1a's model buckets serialize arrays, whose punctuation a",
+  "per-row sum does not carry. The split attributes row identity separately from values; the",
+  "heap total in 1b is a different unit, not their sum. The index figure is the derived",
+  "structures only — the model,",
+  "component, and adjacency maps and the version stamps — which section 1b sees as heap bytes",
+  "on top of its base map. The journal is one array at its default capacity; the overlay holds",
+  "the composed view of every row an optimistic write touched, which is the cost the",
+  "unconfirmed-writes line adds to the base. The snapshot is the whole base written out again",
+  "for persistence (#977 replaces it with a row list), so it is the one line that must not be",
+  "added to a resident total.",
+  "",
   "---",
   "",
   `_Harness runtime: ${fixed((performance.now() - harnessStart) / 1000, 1)} s from module start ` +
     `(fixture generation, ${HEAP_REPS} heap reps, ${LOAD_REPS} build reps, ${LATENCY_BATCHES} batches ` +
-    `per timed read, one store-backed body sweep, ${changeWorkloads.length} change workloads)._`,
+    `per timed read, one store-backed body sweep, ${changeWorkloads.length} change workloads, ` +
+    `one memory-category replica)._`,
   "",
 );
 

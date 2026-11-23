@@ -1301,6 +1301,126 @@ describe("replica: journal capacity (#499)", () => {
   });
 });
 
+describe("replica: retained bytes by category (#966)", () => {
+  const emptyBytes = {
+    rows: 0,
+    values: 0,
+    index: 0,
+    journal: 0,
+    unconfirmedWrites: 0,
+    total: 0,
+  };
+
+  it("is empty before anything is materialized", () => {
+    expect(createReplica().bytes()).toEqual(emptyBytes);
+  });
+
+  it("splits a loaded row into its envelope, values, and index", () => {
+    const row = entity({
+      data: { fields: { title: leaf("Hello", "u_1", 1), icon: leaf("📄", "u_2", 1) } },
+    });
+    const replica = createReplica();
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
+      position: 0,
+      revision: 1,
+      entities: [row],
+    });
+
+    const bytes = replica.bytes();
+    // The only bytes between the two categories are the 8 that spell `,"data":`.
+    expect(bytes.rows + bytes.values).toBe(Buffer.byteLength(JSON.stringify(row), "utf8") - 8);
+    expect(bytes.index).toBeGreaterThan(0);
+    expect(bytes.journal).toBe(0);
+    expect(bytes.unconfirmedWrites).toBe(0);
+    expect(bytes.total).toBe(bytes.rows + bytes.values + bytes.index);
+  });
+
+  it("counts an optimistic write as unconfirmed until it is discarded", () => {
+    const replica = createReplica();
+    const action = put({
+      actionId: "a_1",
+      updateId: "u_1",
+      ms: 10,
+      fields: { title: leaf("Local", "u_1", 10) },
+    });
+
+    replica.optimistic(action);
+    const during = replica.bytes();
+    expect(during.unconfirmedWrites).toBeGreaterThan(0);
+    // The base never saw the write: its rows and values are still the empty base.
+    expect(during.rows).toBe(0);
+    expect(during.values).toBe(0);
+
+    replica.discard("a_1");
+    expect(replica.bytes()).toMatchObject({ rows: 0, values: 0, unconfirmedWrites: 0 });
+  });
+
+  it("keeps an optimistic view of a base row out of the base categories", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Base", "u_1", 10) } }),
+      1,
+    );
+    const base = replica.bytes();
+
+    replica.optimistic(
+      patch({
+        actionId: "a_2",
+        updateId: "u_2",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("Local", "u_2", 20) },
+      }),
+    );
+    const during = replica.bytes();
+
+    expect(during.rows).toBe(base.rows);
+    expect(during.values).toBe(base.values);
+    expect(during.unconfirmedWrites).toBeGreaterThan(0);
+    expect(during.total).toBeGreaterThan(base.total);
+  });
+
+  it("counts the journal it retains", () => {
+    const replica = createReplica();
+    const empty = replica.bytes();
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("One", "u_1", 10) } }),
+      1,
+    );
+    const one = replica.bytes();
+    expect(one.journal).toBeGreaterThan(empty.journal);
+
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_2",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("Two", "u_2", 20) },
+      }),
+      2,
+    );
+    expect(replica.bytes().journal).toBeGreaterThan(one.journal);
+
+    // `load` replaces the journal, so the account returns to the record's.
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
+      position: 2,
+      revision: 3,
+      entities: [entity()],
+    });
+    const loaded = replica.bytes();
+    expect(loaded.journal).toBe(0);
+    expect(loaded.total).toBe(loaded.rows + loaded.values + loaded.index);
+  });
+});
+
 describe("replica: stats (#499)", () => {
   it("counts an optimistic row the composed view exposes", () => {
     const replica = createReplica();
