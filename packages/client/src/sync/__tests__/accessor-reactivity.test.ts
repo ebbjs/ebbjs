@@ -124,7 +124,7 @@ describe("relationship accessor reactivity", () => {
     unsub();
   });
 
-  it("wakes subscribeAccessors on a membership write (id-keyed signal generalizes)", async () => {
+  it("wakes subscribeAccessors on a membership write (the change listener generalizes)", async () => {
     const { storage, client } = await fresh();
     await seedRow(storage, client.replica, platformEntity("grp_1", "group", { name: "G" }));
 

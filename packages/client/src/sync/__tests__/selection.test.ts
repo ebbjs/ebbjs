@@ -26,7 +26,7 @@ import {
 import { createClient } from "../client";
 import type { EntityEvent } from "../namespace";
 import type { Query } from "../query";
-import { queryCacheKey, selectionReadComponents, structuralReads } from "../selection";
+import { queryCacheKey, selectionReadComponents } from "../selection";
 import type { SyncClientOptions } from "../types";
 import {
   callApplyAction,
@@ -281,15 +281,11 @@ describe("selection: system reads are planner-supplied", () => {
     expect(() => client.note.query().select({ groupIds: true } as never)).toThrow(/groupIds/);
   });
 
-  it("derives the membership index from a groups predicate and the group rows from a join", async () => {
+  it("keeps membership in the read set for a groups predicate and the group rows for a join", async () => {
     const { client } = harness(schema);
     const filtered = client.note.query().select({ title: true }).where("groups", "g_1").toQuery();
 
     expect(readSet(filtered)).toEqual(["note/title", "ebb/membership"]);
-    expect(structuralReads(filtered)).toEqual({
-      rows: ["note"],
-      indices: ["membership"],
-    });
 
     const joined = client.note.query().select({ title: true }).with({ groups: true }).toQuery();
     expect(readSet(joined)).toEqual(["note/title", "ebb/membership", "ebb/group"]);

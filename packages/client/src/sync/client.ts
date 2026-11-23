@@ -1110,8 +1110,8 @@ export class SyncClient<
         if (update.method === "drop") continue;
         if (!this.registry.isLogField(componentModel(update.component), update.component)) continue;
 
-        // The replica is the read path, but an on-demand row may not be
-        // materialized there yet. An identical value under an existing key is
+        // The replica is the read path, but a store-backed row may not be
+        // resident there yet. An identical value under an existing key is
         // the same entry (a local write's optimistic entry, or a re-delivery);
         // only a different value under an existing key is a rewrite. A key the
         // replica does not know may still be durable, so only that residue pays
@@ -2134,7 +2134,7 @@ export class SyncClient<
    * common case. The action still materializes regardless.
    *
    * After the action lands in the action log it is folded into the
-   * replica, whose change signal wakes the query cache and row watchers
+   * replica, whose change listener wakes the query cache and row watchers
    * (#512). The `storage.entities` shim keeps its materialize-on-read
    * contract for the remaining internal readers.
    */

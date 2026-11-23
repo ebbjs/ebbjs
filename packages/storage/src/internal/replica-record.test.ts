@@ -42,9 +42,17 @@ describe("isValidReplicaRecord", () => {
       entities,
     });
     expect(isValidReplicaRecord(withEntities([null]))).toBe(false);
-    expect(isValidReplicaRecord(withEntities([{ type: "todo" }]))).toBe(false);
-    expect(isValidReplicaRecord(withEntities([{ id: "todo_1" }]))).toBe(false);
-    expect(isValidReplicaRecord(withEntities([{ id: 123, type: "todo" }]))).toBe(false);
+    expect(
+      isValidReplicaRecord(
+        withEntities([{ id: "todo_1", model: 7, exists: true, created_hlc: null }]),
+      ),
+    ).toBe(false);
+    expect(isValidReplicaRecord(withEntities([{ id: "todo_1", exists: true }]))).toBe(false);
+    expect(
+      isValidReplicaRecord(
+        withEntities([{ id: 123, model: "todo", exists: true, created_hlc: null }]),
+      ),
+    ).toBe(false);
   });
 
   it("requires the row's existence bit and accepts a null creation time", () => {

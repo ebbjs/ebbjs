@@ -295,7 +295,7 @@ export type EntityEvent<TFields extends Record<string, TSchema>> =
  * read leased, and never on subscribe itself: `get(id)` already
  * materialized before the listener attaches. Emits for a wrong-type row
  * are skipped, mirroring `get`'s own type guard. The trigger is the
- * replica's change signal, not the storage adapter's write path.
+ * replica's change listener, not the storage adapter's write path.
  */
 export type EntityRow<
   TFields extends Record<string, TSchema>,
@@ -390,7 +390,7 @@ export interface EntityNamespace<
    * unsubscribe function. The callback fires when the matching id
    * set changes, not on every storage write; the cached result is
    * the id list, so a field edit on an already-matching row is a
-   * no-op. The trigger is the replica's change signal via the
+   * no-op. The trigger is the replica's change listener via the
    * client's query cache (#512).
    *
    * @internal Query results are the public reactive read; this
@@ -939,16 +939,16 @@ export function createEntityNamespace<
       cb: (snapshot: CollectionSnapshot<TFields>) => void,
     ): () => void {
       if (replica === undefined) {
-        // No replica binding → no engine signal. A one-shot read is still
-        // available through `client.<entity>.query()`.
+        // No replica binding → no engine binding for a change event. A
+        // one-shot read is still available through `client.<entity>.query()`.
         return () => {
           // no-op
         };
       }
       const query = queryForFilter(entityName, filter, view);
-      // The cached result is the matching id list, so a field edit on a row
-      // that already matches is not a collection change (the pinned contract)
-      // while a join, delete, or insert is.
+      // The cached result is the matching id list, so the listener fires only
+      // when the set of matching ids changes: a field edit that leaves a row
+      // matching edits the row but not the result.
       const store = replica.queries.watch<string>("collection", query, {
         ready: () => replica.hydrate(),
         isReady: () => replica.hydrated(),

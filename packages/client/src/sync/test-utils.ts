@@ -93,7 +93,7 @@ let seedPosition = 0;
  * invisible to a query unless it is folded here too.
  *
  * Call this before the shim write: production ingests the Action (which
- * wakes the replica signal) before the shim is materialized.
+ * advances the replica revision) before the shim is materialized.
  */
 export const seedReplicaRow = (
   replica: Replica,
