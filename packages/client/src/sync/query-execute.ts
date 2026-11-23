@@ -447,7 +447,7 @@ export const patchShapeOf = (query: Query): PatchShape => {
 };
 
 /**
- * Splice freshly projected rows into a cached result. The id set and its order
+ * Splice freshly projected rows into a retained result. The id set and its order
  * are the caller's proof that nothing moved, so a row keeps its position; an
  * unchanged row keeps its reference, and an unchanged result keeps the array,
  * so a view re-renders only for a visible change.

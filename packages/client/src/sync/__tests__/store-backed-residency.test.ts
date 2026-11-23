@@ -633,7 +633,7 @@ describe("a source joining a row the replica does not hold", () => {
     expect(client.replica.isComponentResident("page_content_1", "page_content/text")).toBe(true);
 
     // The joined body was installed by a read: residency, not content, so the
-    // cached result has no reason to re-run.
+    // retained result has no reason to re-run.
     const revision = client.replica.revision;
     await flushTasks();
     expect(store.getSnapshot().status).toBe("current");

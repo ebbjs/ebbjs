@@ -1,11 +1,12 @@
 /**
- * Reactive query results (#512), a view over the subscription registry (#941).
+ * Reactive query results (#512): the results view over the subscription
+ * registry (#941).
  *
- * A result is not cached here. The registry holds one entry per lowered
- * {@link Query} and surface, and that entry is the result: its snapshot, its
- * revision, and the leases its dependencies need. This module only
- * drives one — it runs the source, derives the result status, and tells the
- * registry what to hold — so the lifetime question has one answer.
+ * A result lives on its registry entry, not here. The registry holds one entry
+ * per lowered {@link Query} and surface, and that entry is the result: its
+ * snapshot, its revision, and the leases its dependencies need. This module
+ * only drives one — it runs the source, derives the result status, and tells
+ * the registry what to hold — so the lifetime question has one answer.
  *
  * While a subscriber is attached the entry is live: the registry dispatches the
  * changes that touch its reads, and the entry claims the components its result
@@ -53,7 +54,7 @@ import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 import type { Query } from "./query";
 import { patchResultRows, patchShapeOf, type PatchShape } from "./query-execute";
 import { compileReadComponents, planQuery, type CompiledReadComponents } from "./query-plan";
-import { queryCacheKey, selectionReadComponents, structuralReads } from "./selection";
+import { queryResultKey, selectionReadComponents, structuralReads } from "./selection";
 import {
   createSubscriptionRegistry,
   patchableRows,
@@ -119,7 +120,7 @@ export interface QuerySource<T> {
    * source cannot reproduce the run for those rows. Absent means every change
    * re-runs.
    *
-   * The cache calls it only for a shape a patch may rewrite (no order, no
+   * The results view calls it only for a shape a patch may rewrite (no order, no
    * limit, no join) and an unsafe batch never reaches it, so an implementation
    * may assume the rows' place in the result is unchanged. It must answer one
    * row per id it was handed — the same ids, no duplicates and no others — or
@@ -130,7 +131,7 @@ export interface QuerySource<T> {
   patch?(ids: readonly string[]): readonly T[] | null;
 }
 
-export interface QueryCache {
+export interface QueryResults {
   /**
    * Read or start the result for `query` on `surface`. Two chains that lower to
    * the same query and surface share one registry entry and one result.
@@ -139,8 +140,8 @@ export interface QueryCache {
 }
 
 /**
- * What the cache keeps on its registry entry: how to run the source, what a
- * change may rewrite, and who is listening. The result, the revision it
+ * What the results view keeps on its registry entry: how to run the source,
+ * what a change may rewrite, and who is listening. The result, the revision it
  * reflects, and the claims it owns live on the entry, not here — this is a
  * consumer's controls, not a second copy of the data.
  */
@@ -219,14 +220,14 @@ const healClaims = (
 };
 
 /**
- * Build the cache over a live replica and the registry its results live in.
- * Without a registry one is built over the replica; the inactive lifetime is
- * the registry's, so the cache takes no lifetime option of its own.
+ * Build the results view over a live replica and the registry its results live
+ * in. Without a registry one is built over the replica; the inactive lifetime
+ * is the registry's, so the store takes no lifetime option of its own.
  */
-export const createQueryCache = (
+export const createQueryResults = (
   replica: Replica,
   subscriptions: SubscriptionRegistry = createSubscriptionRegistry(replica),
-): QueryCache => {
+): QueryResults => {
   const isRelevant = <T>(run: QueryRun<T>, from: Revision): boolean => {
     if (replica.revision === from) return false;
     const changes = replica.changesSince(from);
@@ -476,7 +477,7 @@ export const createQueryCache = (
 
   /**
    * Apply a batch as a patch instead of a re-run (#942): re-project the rows
-   * the batch changed and splice them into the cached result. Returns false
+   * the batch changed and splice them into the retained result. Returns false
    * when the batch is not one a patch may apply, so the caller re-runs.
    *
    * A patch is the run it replaces. `patchShapeOf` has already ruled out an
@@ -597,7 +598,7 @@ export const createQueryCache = (
 
   return {
     watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T> {
-      const key = queryCacheKey(surface, query);
+      const key = queryResultKey(surface, query);
       // A collection result keeps ids, a projected row keeps the whole shape;
       // only the latter needs the source and joined models read whole.
       const readNames =

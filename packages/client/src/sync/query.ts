@@ -2,7 +2,7 @@
  * The serializable query value (#498).
  *
  * A `Query` is pure data — no closures over storage. It is the planner
- * input, the result-cache key (#512), and the invalidation record: the
+ * input, the result key (#512), and the invalidation record: the
  * planner derives the components it reads from it, so the same value that
  * produced a result also says which components must change to invalidate
  * it.

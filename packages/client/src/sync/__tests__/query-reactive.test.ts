@@ -1,8 +1,8 @@
 /**
  * Integration tests for reactive query results at the client seam (#512).
  *
- * The query cache lives beside the replica: a chain's result is cached by its
- * lowered query, a remount reads it back with a status instead of re-running,
+ * The results view lives beside the replica: a chain's result is retained by
+ * its lowered query, a remount reads it back with a status instead of re-running,
  * and a replica change re-runs the query, diffing the result before waking
  * subscribers. The plan's component reads keep unrelated changes silent, and a
  * projected-row result reads its whole source model.
@@ -86,8 +86,8 @@ const seed = async (client: Client, actions: readonly Action[]): Promise<void> =
   for (const next of actions) await callApplyAction(client, next);
 };
 
-describe("query result cache at the client seam", () => {
-  it("a remount reads the cached result with its status and does not re-run", async () => {
+describe("results view at the client seam", () => {
+  it("a remount reads the retained result with its status and does not re-run", async () => {
     const client = makeClient();
     await seed(client, [put(1, "issue_1", "issue", { title: "Ship", status: "open" })]);
 
@@ -111,7 +111,7 @@ describe("query result cache at the client seam", () => {
     detachRemount();
   });
 
-  it("remounts a stale cached result and refreshes it for the subscriber", async () => {
+  it("remounts a stale retained result and refreshes it for the subscriber", async () => {
     const client = makeClient();
     await seed(client, [put(1, "issue_1", "issue", { title: "Ship", status: "open" })]);
     const first = client.issue.query().result();

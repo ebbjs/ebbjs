@@ -20,7 +20,7 @@ import { createClient } from "@ebbjs/client";
 
 Working in development. The README will fill out as the SDK stabilizes.
 Today: handshake, catch-up, live SSE, outbox, presence, and the local query
-engine (typed `query()` reads with one-level `with` joins and cached reactive
+engine (typed `query()` reads with one-level `with` joins and retained reactive
 results). The React bindings live in `@ebbjs/react`; server functions are
 still being designed.
 
@@ -120,7 +120,7 @@ Grammar:
 Terminals: `await` / `.then()` for rows, `.first()`, `.count()`, `.exists()`,
 the async iterator, and `.toRaw()` for the untyped wire entities.
 
-A chain's result is cached and reactive: `.result()` returns the engine store
+A chain's result is retained and reactive: `.result()` returns the engine store
 (`getSnapshot()` reads `{ data, status, loading, error }`; `subscribe(listener)`
 fires on change) and the chain's own `.subscribe(listener)` is the shorthand.
 `status` is one of:
@@ -132,11 +132,11 @@ fires on change) and the chain's own `.subscribe(listener)` is the shorthand.
 | `current`  | The result was produced at the replica's current revision.        |
 | `failed`   | The last run threw; sticky until a successful run.                |
 
-Two chains that lower to the same query share one cached result, so a remount
+Two chains that lower to the same query share one retained result, so a remount
 reads it back instead of re-running. In React, `useQuery` wraps this surface.
 A chain over already-materialized rows — a row accessor, or a builder from
 `buildQueryBuilder` — has no engine entry, so `.result()` and `.subscribe()`
-refuse rather than keep a second, uncached copy: await the chain to read it.
+refuse rather than keep a second copy beside the results view: await the chain to read it.
 
 Name the row a query returns with `QueryRowOf`, passing the schema and the
 `with(...)` join keys you selected. It derives the same projection the query
@@ -208,7 +208,7 @@ A cold projection on a page that needs acquisition runs the narrowing plan
 twice: once to learn the page is not fully resident, then again to acquire and
 project it. A large cold projection therefore pays the plan twice (#962).
 
-A relevant change patches the cached result only when it cannot move the row.
+A relevant change patches the retained result only when it cannot move the row.
 An unselected `client.<model>.query()` reads `<model>/*`, so the patch rate
 depends on every projected component being resident: measured through the
 shipped path at 200 pages, 40/40 projected writes patch when every projected

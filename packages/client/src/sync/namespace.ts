@@ -53,7 +53,7 @@ import { emptyQuery, type Predicate, type Query } from "./query";
 import { componentRowView, type GrantFieldMap, type GroupFieldMap } from "./system-row";
 import { planQuery } from "./query-plan";
 import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";
-import type { QueryCache } from "./query-cache";
+import type { QueryResults } from "./query-results";
 import type { ComponentMigrations } from "./migrations";
 import type { SubscriptionRegistry } from "./subscriptions";
 import { selectionFieldKeys, type Selection } from "./selection";
@@ -354,7 +354,7 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
  * relationship on the entity.
  *
  * `subscribe(filter, cb)` registers a reactive listener on the
- * engine's query cache. The callback fires whenever the set of
+ * engine's results view. The callback fires whenever the set of
  * matching entity ids changes, so a field edit on a row that
  * already matches is not a collection change. Each fire carries a
  * typed `CollectionSnapshot` of the current matching set.
@@ -388,10 +388,10 @@ export interface EntityNamespace<
   /**
    * Reactive subscribe on the matching set. Returns an
    * unsubscribe function. The callback fires when the matching id
-   * set changes, not on every storage write; the cached result is
+   * set changes, not on every storage write; the retained result is
    * the id list, so a field edit on an already-matching row is a
    * no-op. The trigger is the replica's change listener via the
-   * client's query cache (#512).
+   * client's results view (#512).
    *
    * @internal Query results are the public reactive read; this
    * collection signal stays internal / undocumented.
@@ -512,8 +512,8 @@ export type QueryRowOf<
  */
 export interface ReplicaAccess {
   readonly replica: Replica;
-  /** The reactive query-result cache every chain and collection subscribe shares. */
-  readonly queries: QueryCache;
+  /** The reactive results view every chain and collection subscribe shares. */
+  readonly results: QueryResults;
   /** The registry every row subscription is mounted on. */
   readonly subscriptions: SubscriptionRegistry;
   /** Whether the replica is hydrated, so a query can run synchronously. */
@@ -917,7 +917,7 @@ export function createEntityNamespace<
         entityName,
         registry,
         replica: replica.replica,
-        queries: replica.queries,
+        results: replica.results,
         hydrated: () => replica.hydrated(),
         hydrate: () => replica.hydrate(),
         migrations: read.migrations,
@@ -946,10 +946,10 @@ export function createEntityNamespace<
         };
       }
       const query = queryForFilter(entityName, filter, view);
-      // The cached result is the matching id list, so the listener fires only
+      // The retained result is the matching id list, so the listener fires only
       // when the set of matching ids changes: a field edit that leaves a row
       // matching edits the row but not the result.
-      const store = replica.queries.watch<string>("collection", query, {
+      const store = replica.results.watch<string>("collection", query, {
         ready: () => replica.hydrate(),
         isReady: () => replica.hydrated(),
         execute: () => {
@@ -966,7 +966,7 @@ export function createEntityNamespace<
       });
       return store.subscribe(
         () => {
-          // The cache holds ids; the rows are read from the replica as this
+          // The results view holds ids; the rows are read from the replica as this
           // callback runs, after the change that could alter the set has
           // settled that entry.
           const ids = store.getSnapshot().data;
@@ -988,7 +988,7 @@ export function createEntityNamespace<
           cb({ entities, filter, count: entities.length });
         },
         // A collection subscribe never fires on subscribe itself; the first
-        // run primes the cache silently and later membership changes fire.
+        // run primes the store silently and later membership changes fire.
         { initial: false },
       );
     },

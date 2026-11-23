@@ -101,7 +101,7 @@ import {
   type Selection,
 } from "./selection";
 import { componentRowView, type GroupFieldMap } from "./system-row";
-import type { QueryCache, QueryStore } from "./query-cache";
+import type { QueryResults, QueryStore } from "./query-results";
 import type { ComponentMigrations } from "./migrations";
 
 export { projectFieldValue } from "@ebbjs/write";
@@ -366,8 +366,8 @@ export interface QueryContext {
   readonly componentFor?: (field: string) => string | null;
   /** The materialized read path the plan executes over. */
   readonly replica: Replica;
-  /** The reactive result cache shared by every chain over this client. */
-  readonly queries: QueryCache;
+  /** The reactive results view shared by every chain over this client. */
+  readonly results: QueryResults;
   /** Whether the replica is hydrated, so the plan can run synchronously. */
   hydrated(): boolean;
   /** Bring the replica up to date before the plan runs. Memoized by the client. */
@@ -377,8 +377,8 @@ export interface QueryContext {
 }
 
 /**
- * The binding a reactive chain needs: the query cache a chain subscribes to,
- * and the synchronous page read whose result that cache holds. A chain over
+ * The binding a reactive chain needs: the results view a chain subscribes to,
+ * and the synchronous page read whose result that store holds. A chain over
  * already-materialized rows has neither.
  */
 interface ResultEngine {
@@ -539,22 +539,22 @@ export interface QueryBuilder<
   /** Materialize the untyped source entities, skipping projection and joins. */
   toRaw(): Promise<readonly Entity[]>;
   /**
-   * Subscribe to the engine-cached result. The listener fires only when the
+   * Subscribe to the retained result. The listener fires only when the
    * result changes — a source- or join-type change that leaves it identical
    * stays silent. Refused on a chain over an already-materialized list, which
    * has no engine binding for a change event.
    */
   subscribe(listener: () => void): () => void;
   /**
-   * The reactive result store — `{ data, status, loading, error }` with a
+   * The reactive results view — `{ data, status, loading, error }` with a
    * stable snapshot between result changes. Every chain lowering to the same
-   * query shares one cached entry, so a remount reads it instead of
-   * re-running. Refused on a candidate chain, which has no cache entry.
+   * query shares one retained entry, so a remount reads it instead of
+   * re-running. Refused on a candidate chain, which has no result entry.
    */
   result(): QueryStore<JoinedRow<TFields, TJoined, TRow>>;
   /**
    * The serializable query value the chain has accumulated. Pure data:
-   * the planner input and, in #512, the result-cache key.
+   * the planner input and, in #512, the result key.
    */
   toQuery(): Query;
   /** Thenable — `await qb` resolves to the projected rows. */
@@ -610,7 +610,7 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
  * against the current replica, or decline when a projection would not be the
  * re-run it stands in for.
  *
- * The ids it returns are spliced into the cached result, so the run's own
+ * The ids it returns are spliced into the retained result, so the run's own
  * shape is already known to be patchable (no order, no limit, no join) and no
  * change it is handed touches a predicate, an order key, or a join target. What
  * remains is whether this row is the row a run would project:
@@ -654,7 +654,7 @@ const patchProjection =
  * reads an index rather than the row, so this cannot re-evaluate it and treats
  * it as satisfied. That is safe only because such a predicate is a `keys`
  * component: `patchableRows` declines the batch, so no row whose place depends
- * on one ever reaches here through the cache. A source calling `patch` on its
+ * on one ever reaches here through the results view. A source calling `patch` on its
  * own must keep that contract, or it will widen a result it cannot re-narrow.
  */
 const matchesEveryFilter = (row: Entity, query: Query): boolean =>
@@ -860,7 +860,7 @@ const releaseAll = (releases: readonly Release[]): Release => {
  * before projecting. The narrowing ops already picked the page, so only these
  * rows are read — the two-phase read that makes a store-backed projection
  * legal without materializing the type. The caller releases after projection;
- * a cached result then holds the same components through its subscription.
+ * a retained result then holds the same components through its subscription.
  */
 const acquirePage = async (
   rows: readonly Entity[],
@@ -1096,12 +1096,12 @@ function buildChain<
     engine: ResultEngine,
   ): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
     const patch = patchRun?.(query);
-    return engine.context.queries.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
+    return engine.context.results.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
       ready: () => engine.context.hydrate(),
       isReady: () => engine.context.hydrated(),
       // A page the replica already holds settles synchronously, so its refresh
       // never flashes `stale`. One that must acquire a component or a join
-      // target returns the pending run, which the cache publishes as `stale`
+      // target returns the pending run, which the results view publishes as `stale`
       // until it settles.
       execute: () => {
         const rows = engine.syncRun(query);
@@ -1192,7 +1192,7 @@ function buildChain<
         );
       }
       // A listener never fires on subscribe itself: the first run primes the
-      // cache silently, later result changes wake the listener.
+      // store silently, later result changes wake the listener.
       return resultFor(query, { context, syncRun }).subscribe(listener, { initial: false });
     },
     result() {

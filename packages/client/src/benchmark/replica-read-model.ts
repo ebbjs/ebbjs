@@ -33,7 +33,7 @@ import type { ReplicaRecord } from "@ebbjs/storage/types";
 import { fieldComponent, makeHlc } from "@ebbjs/core";
 import { emptyQuery, type Query } from "../sync/query";
 import { createChangeDispatcher } from "../sync/dependency-index";
-import { createQueryCache, type QuerySource } from "../sync/query-cache";
+import { createQueryResults, type QuerySource } from "../sync/query-results";
 import { createReplicaExecutor, executePlan, patchResultRows } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";
 import { forwardMany, forwardOne, membershipGroups, reverse } from "../sync/relationship";
@@ -634,14 +634,14 @@ if (mountedLeases.leased < 1) {
 // ---------------------------------------------------------------------------
 
 /**
- * One change workload, measured through the shipped query cache (#942).
+ * One change workload, measured through the shipped results view (#942).
  *
  * "Rows examined" is `traversalCounter.resultRowsRead`: the shipped counter the
  * replica executor records into, so a re-run adds every row its plan scan
  * materialized and a patch adds the rows it re-read by id. A row subscription's
  * consumer re-reads its one row per change, which is counted the same way.
  * "Re-runs" and "patches" are this benchmark's own count of the source calls
- * the cache made, one per change at most. A row subscription has no patch path:
+ * the results view made, one per change at most. A row subscription has no patch path:
  * its one row read per change is counted as a re-read, not a patch.
  */
 interface ChangeWorkload {
@@ -675,9 +675,10 @@ const pageResult = (entity: Entity): PageResultRow => ({
 });
 
 /**
- * A cached rows query over the benchmark replica: the shipped plan and the
- * shipped executor, so a re-run really does scan the source type and a patch
- * really does read the changed rows by id. The cache above it is the shipped
+ * A rows query over the benchmark replica, run through the results view: the
+ * shipped plan and the shipped executor, so a re-run really does scan the
+ * source type and a patch really does read the changed rows by id. The store
+ * above it is the shipped
  * patch dispatcher; only the source is local because the benchmark has no
  * client schema to lower a builder chain through.
  */
@@ -695,7 +696,7 @@ const countedSource = (query: Query, withPatch = true) => {
       return rows;
     },
   };
-  // Without the hook the cache re-runs every relevant change: the behaviour a
+  // Without the hook the results view re-runs every relevant change: the behaviour a
   // source that cannot patch keeps, and the "before" this change is measured
   // against.
   if (withPatch) {
@@ -716,7 +717,7 @@ const countedSource = (query: Query, withPatch = true) => {
 
 /**
  * Changes are delivered straight into the replica, which is what the sync
- * stream does: the revision journal is the only thing a cached result reads.
+ * stream does: the revision journal is the only thing a retained result reads.
  */
 let benchPosition = 0;
 
@@ -812,8 +813,8 @@ const deliverNewPage = (pageIndex: number): void => {
 };
 
 /**
- * Prime one cached result, then time one change at a time and count what the
- * cache did with it. The priming run is excluded from every counter and from
+ * Prime one retained result, then time one change at a time and count what the
+ * results view did with it. The priming run is excluded from every counter and from
  * the timing, so each row is a per-change cost.
  */
 const measureChanges = (
@@ -824,9 +825,9 @@ const measureChanges = (
   options: { readonly patch?: boolean } = {},
 ): ChangeWorkload => {
   const registry = createSubscriptionRegistry(replica);
-  const cache = createQueryCache(replica, registry);
+  const results = createQueryResults(replica, registry);
   const { source, runs, patches } = countedSource(query, options.patch ?? true);
-  const store = cache.watch("rows", query, source);
+  const store = results.watch("rows", query, source);
   const detach = store.subscribe(() => {
     /* the result is read back through the snapshot */
   });
@@ -957,14 +958,14 @@ const writePathMs = (() => {
 })();
 
 /**
- * What splicing one row into a cached result costs beyond reading it: the
+ * What splicing one row into a retained result costs beyond reading it: the
  * patch keeps the array order by rebuilding the result, which is O(result).
  */
 const spliceMs = (() => {
   const registry = createSubscriptionRegistry(replica);
-  const cache = createQueryCache(replica, registry);
+  const results = createQueryResults(replica, registry);
   const { source } = countedSource(emptyQuery("page"));
-  const store = cache.watch("rows", emptyQuery("page"), source);
+  const store = results.watch("rows", emptyQuery("page"), source);
   const detach = store.subscribe(() => {});
   const data = store.getSnapshot().data ?? [];
   const first = data[0];
@@ -1562,9 +1563,9 @@ const beforeRows = rowsPerChange(changeWorkloads[0]!);
 push(
   "## 6. Patched result changes (#942)",
   "",
-  "A cached rows query over the same replica, driven through the shipped",
-  "`createQueryCache` + `createSubscriptionRegistry`: a change that can only rewrite a",
-  "projected value of a resident row is patched into the cached result, and everything",
+  "A rows query over the same replica, run through the shipped results view:",
+  "`createQueryResults` + `createSubscriptionRegistry`: a change that can only rewrite a",
+  "projected value of a resident row is patched into the retained result, and everything",
   "else re-runs the plan. The source is local only because this benchmark has no client",
   "schema to lower a builder chain through; its `execute` is the shipped `executePlan`",
   "over the shipped replica executor, and its `patch` re-reads only the named rows.",
@@ -1573,7 +1574,7 @@ push(
   "executor records into: a re-run adds every row its plan scan materialized, a patch adds",
   "the rows it re-read by id, and a row subscription adds the one row its consumer re-reads",
   "(the read `namespace.ts` performs on a change). **Re-runs** and **patches** count the",
-  'source calls the cache made for each change; the row subscription\'s "re-reads" are its',
+  'source calls the results view made for each change; the row subscription\'s "re-reads" are its',
   "consumer's one-row `get`, which is not a patch. **Result work** is the median time inside that",
   "call — the plan's scan, order, and projection for a re-run, the one-row re-projection for a",
   `patch — over ${grouped(CHANGE_ITERATIONS)} single-row edits or ${grouped(RE_RUN_ITERATIONS)} re-running changes.`,
@@ -1595,7 +1596,7 @@ push(
   "move, patch where it cannot — and the last row shows a row subscription is a one-row read,",
   "not a query: its `1.00 re-reads` is the pre-existing one-row `get`, not a new fast path.",
   "",
-  "The `patches / change` of the patch rows is the cache dispatcher's rate for a source whose",
+  "The `patches / change` of the patch rows is the results view dispatcher's rate for a source whose",
   "projection is always resident. It is not unconditional for the shipped chain: an unselected",
   "`client.<model>.query()` read expands `<model>/*` to every registered component and the",
   "patch declines a row it cannot prove holds one of them, so a projected component the row",

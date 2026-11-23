@@ -105,7 +105,7 @@ export interface Dependency {
 export type SubscriptionSpec =
   | {
       readonly kind: "query";
-      /** The cache key two chains lowering to the same read share. */
+      /** The result key two chains lowering to the same read share. */
       readonly key: string;
       /** Component names read: exact (`todo/title`) or whole-model (`todo/*`). */
       readonly reads: readonly string[];

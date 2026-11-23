@@ -96,7 +96,7 @@ import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
 import { createClientStatus, type ClientStatus, type ClientStatusController } from "./status";
-import { createQueryCache, type QueryCache } from "./query-cache";
+import { createQueryResults, type QueryResults } from "./query-results";
 import {
   evictableRowIds,
   mergeReplicaRecords,
@@ -280,7 +280,7 @@ export class SyncClient<
    * results and no timers: the registry holds them and one `residencyTtlMs`
    * decides how long an unwatched result and its claims stay warm (#941).
    */
-  readonly queries: QueryCache;
+  readonly results: QueryResults;
   /**
    * Every live query and row subscription (#937): one entry each, with its own
    * revision cursor and the residency claims its dependencies need. Dispatch
@@ -499,7 +499,7 @@ export class SyncClient<
     this.subscriptions = createSubscriptionRegistry(this.replica, {
       residencyTtlMs: opts.residencyTtlMs,
     });
-    this.queries = createQueryCache(this.replica, this.subscriptions);
+    this.results = createQueryResults(this.replica, this.subscriptions);
     const rawFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.fetchImpl = withAbortSignal(rawFetch, this.abortController.signal);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
@@ -2134,7 +2134,7 @@ export class SyncClient<
    * common case. The action still materializes regardless.
    *
    * After the action lands in the action log it is folded into the
-   * replica, whose change listener wakes the query cache and row watchers
+   * replica, whose change listener wakes the results view and row watchers
    * (#512). The `storage.entities` shim keeps its materialize-on-read
    * contract for the remaining internal readers.
    */
@@ -2668,7 +2668,7 @@ export function createClient<
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, readCap, {
     replica: client.replica,
-    queries: client.queries,
+    results: client.results,
     subscriptions: client.subscriptions,
     hydrated: () => client.isReplicaHydrated(),
     // Arrow over the public method keeps the namespace free of the

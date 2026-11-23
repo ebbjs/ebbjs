@@ -1,12 +1,12 @@
 /**
- * Tests for `useQuery` — subscribe a component to a cached engine query.
+ * Tests for `useQuery` — subscribe a component to a retained engine query.
  *
  * The hook hands its callback `q`: the provider's client narrowed to every
  * entity namespace's `query()`. `q.todo.query` and `client.todo.query` are the
  * same method, so a hook caller and an imperative caller cannot drift.
  *
- * The result is the engine's cached store, keyed by the lowered query. Status
- * is the cache's, never stored ad hoc — `unloaded` before the first run,
+ * The result is the engine's store, keyed by the lowered query. Status is the
+ * store's, never stored ad hoc — `unloaded` before the first run,
  * `current` at the replica's revision, `stale` when a held result is older than
  * the replica and a re-run is pending.
  */
@@ -290,7 +290,7 @@ describe("useQuery", () => {
     expect(screen.getByTestId("completed").textContent).toBe("false");
   });
 
-  it("reads the cached result with status `current` on remount", async () => {
+  it("reads the retained result with status `current` on remount", async () => {
     await seed(client, "todo_active", "Active", false);
 
     const first = renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
@@ -320,7 +320,7 @@ describe("useQuery", () => {
     first.unmount();
     renders.length = 0;
 
-    // The replica moves while nothing is subscribed: the cached entry is held
+    // The replica moves while nothing is subscribed: the retained entry is held
     // at the older revision, so the remount reads usable-but-stale rows.
     await act(async () => {
       await seed(client, "todo_1", "Renamed", false);
@@ -409,9 +409,9 @@ describe("useQuery", () => {
   });
 
   it("releases its engine subscription on unmount", async () => {
-    const realWatch = client.queries.watch.bind(client.queries);
+    const realWatch = client.results.watch.bind(client.results);
     let active = 0;
-    vi.spyOn(client.queries, "watch").mockImplementation(((
+    vi.spyOn(client.results, "watch").mockImplementation(((
       ...args: Parameters<typeof realWatch>
     ) => {
       const store = realWatch(...args);

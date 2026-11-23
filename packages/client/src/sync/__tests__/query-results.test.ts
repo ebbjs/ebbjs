@@ -1,23 +1,23 @@
 /**
- * Unit tests for the reactive query-result cache (#512).
+ * Unit tests for the reactive query results (#512).
  *
- * The cache is keyed by the lowered query, derives its status from the
- * replica's revision, and invalidates on components: a replica change re-runs
- * only entries whose read set it touches. A re-run that produces an equal
- * result does not notify.
+ * The results view is keyed by the lowered query, derives a result's status
+ * from the replica's revision, and invalidates on components: a replica change
+ * re-runs only entries whose read set it touches. A re-run that produces an
+ * equal result does not notify.
  */
 
 import { describe, expect, it, vi } from "vitest";
 import { componentName, makeHlc, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
-import { createQueryCache, type QuerySource } from "../query-cache";
+import { createQueryResults, type QuerySource } from "../query-results";
 import { createSubscriptionRegistry, type SubscriptionRegistry } from "../subscriptions";
 import { EBB_COMPONENTS } from "@ebbjs/core";
 import { flushTasks, isPlatformModel, linkAction, rowComponents, waitFor } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery } from "../query-plan";
-import { queryCacheKey, selectionReadComponents } from "../selection";
+import { queryResultKey, selectionReadComponents } from "../selection";
 
 const todoQuery = (): Query => emptyQuery("todo");
 
@@ -174,7 +174,7 @@ const deferredSource = (): QuerySource<Entity> & {
   return source;
 };
 
-describe("queryCacheKey", () => {
+describe("queryResultKey", () => {
   it("is canonical over object key order and distinct per surface", () => {
     const a: Query = {
       source: "todo",
@@ -190,8 +190,8 @@ describe("queryCacheKey", () => {
       groups: [[{ value: "open", field: "status", kind: "field" }]],
       source: "todo",
     };
-    expect(queryCacheKey("rows", a)).toBe(queryCacheKey("rows", b));
-    expect(queryCacheKey("rows", a)).not.toBe(queryCacheKey("collection", a));
+    expect(queryResultKey("rows", a)).toBe(queryResultKey("rows", b));
+    expect(queryResultKey("rows", a)).not.toBe(queryResultKey("collection", a));
   });
 
   it("distinguishes an undefined predicate value from an absent one", () => {
@@ -203,16 +203,16 @@ describe("queryCacheKey", () => {
       ...emptyQuery("todo"),
       groups: [[{ kind: "field", field: "title" }]],
     } as unknown as Query;
-    expect(queryCacheKey("rows", withUndefined)).not.toBe(queryCacheKey("rows", absent));
+    expect(queryResultKey("rows", withUndefined)).not.toBe(queryResultKey("rows", absent));
   });
 });
 
-describe("query cache: status and subscription", () => {
+describe("query results: status and subscription", () => {
   it("starts unloaded, never as an empty result, then settles current", async () => {
     const replica = createReplica();
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
 
     expect(store.getSnapshot()).toEqual({
       data: undefined,
@@ -232,7 +232,7 @@ describe("query cache: status and subscription", () => {
 
   it("notifies a listener that joins while the first run is in flight", async () => {
     const replica = createReplica();
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     let release: ((rows: readonly Entity[]) => void) | null = null;
     const finish = (rows: readonly Entity[]): void => {
       const resolve = release;
@@ -254,7 +254,7 @@ describe("query cache: status and subscription", () => {
       },
     };
 
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     store.subscribe(() => {});
     await flushTasks();
     expect(runs).toBe(1);
@@ -271,8 +271,8 @@ describe("query cache: status and subscription", () => {
 
   it("notifies every listener that opted into the first run", async () => {
     const replica = createReplica();
-    const cache = createQueryCache(replica);
-    const store = cache.watch(
+    const results = createQueryResults(replica);
+    const store = results.watch(
       "rows",
       todoQuery(),
       sourceWith(() => [row("todo_1")]),
@@ -286,14 +286,14 @@ describe("query cache: status and subscription", () => {
 
   it("shares one entry and one run between identical queries", async () => {
     const replica = createReplica();
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => [row("todo_1")]);
 
-    const first = cache.watch("rows", todoQuery(), source);
+    const first = results.watch("rows", todoQuery(), source);
     first.subscribe(() => {});
     await flushTasks();
 
-    const second = cache.watch(
+    const second = results.watch(
       "rows",
       todoQuery(),
       sourceWith(() => [row("todo_2")]),
@@ -305,10 +305,10 @@ describe("query cache: status and subscription", () => {
   it("leaves an unsubscribed entry stale and re-runs it on remount", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     let rows: readonly Entity[] = [row("todo_1")];
     const source = sourceWith(() => rows);
-    const first = cache.watch("rows", todoQuery(), source);
+    const first = results.watch("rows", todoQuery(), source);
     const detach = first.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -320,7 +320,7 @@ describe("query cache: status and subscription", () => {
     expect(first.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     expect(first.getSnapshot().data).toEqual([row("todo_1")]);
 
-    const second = cache.watch("rows", todoQuery(), source);
+    const second = results.watch("rows", todoQuery(), source);
     expect(second.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     const detachSecond = second.subscribe(() => {});
     await flushTasks();
@@ -330,13 +330,13 @@ describe("query cache: status and subscription", () => {
   });
 });
 
-describe("query cache: invalidation", () => {
+describe("query results: invalidation", () => {
   it("re-runs on a read-component hit, keeps data usable while stale, and notifies on the status change", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = deferredSource();
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     let notified = 0;
     store.subscribe(() => {
       notified += 1;
@@ -366,9 +366,9 @@ describe("query cache: invalidation", () => {
   it("settles a published stale snapshot back to current when the async re-run is equal", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = deferredSource();
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     let notified = 0;
     store.subscribe(() => {
       notified += 1;
@@ -395,9 +395,9 @@ describe("query cache: invalidation", () => {
   it("stays stale through an unrelated batch while the re-run is in flight", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = deferredSource();
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     store.subscribe(() => {});
     await flushTasks();
     source.resolve([row("todo_1")]);
@@ -425,9 +425,9 @@ describe("query cache: invalidation", () => {
   it("advances the revision and stays silent when no change touches its reads", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     let notified = 0;
     store.subscribe(() => {
       notified += 1;
@@ -444,13 +444,13 @@ describe("query cache: invalidation", () => {
   it("re-runs on a relationship-row change when the query reads an edge", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => [row("todo_1")]);
     const query: Query = {
       ...emptyQuery("todo"),
       groups: [[{ kind: "relationship", as: "owner", type: "todo", anyOf: ["user_1"] }]],
     };
-    const store = cache.watch("rows", query, source);
+    const store = results.watch("rows", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -463,9 +463,9 @@ describe("query cache: invalidation", () => {
   it("does not notify when the re-run produces an equal result", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     let notified = 0;
     store.subscribe(() => {
       notified += 1;
@@ -483,7 +483,7 @@ describe("query cache: invalidation", () => {
   });
 });
 
-describe("query cache: component-granular invalidation", () => {
+describe("query results: component-granular invalidation", () => {
   const statusQuery = (): Query => ({
     ...emptyQuery("todo"),
     groups: [[{ kind: "field", field: "status", value: "open" }]],
@@ -492,11 +492,11 @@ describe("query cache: component-granular invalidation", () => {
   it("does not re-run a plan that reads another component", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const query = statusQuery();
     expect(planQuery(query).readComponents).toEqual(["todo/status"]);
     const source = sourceWith(() => ["todo_1"]);
-    const store = cache.watch("collection", query, source);
+    const store = results.watch("collection", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -514,13 +514,13 @@ describe("query cache: component-granular invalidation", () => {
   it("re-runs a full-scan collection only when the model's row set changes", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const query = emptyQuery("todo");
     // A scan with no predicate names no component: its id set depends on the
     // model's membership, not on any value it carries.
     expect(planQuery(query).readComponents).toEqual([]);
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("collection", query, source);
+    const store = results.watch("collection", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -535,16 +535,16 @@ describe("query cache: component-granular invalidation", () => {
   it("reads the whole source model for a projected-row result", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const query = statusQuery();
     expect(selectionReadComponents(query)).toContain("todo/*");
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", query, source);
+    const store = results.watch("rows", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
 
-    // The cached result carries the title, so a title write must re-run it.
+    // The retained result carries the title, so a title write must re-run it.
     write(replica, "todo_1", "todo", { title: "Ship it" });
     expect(source.runs).toBe(2);
   });
@@ -552,7 +552,7 @@ describe("query cache: component-granular invalidation", () => {
   it("re-runs a plan when a row gains a component it excluded", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const query: Query = {
       ...emptyQuery("todo"),
       groups: [
@@ -566,7 +566,7 @@ describe("query cache: component-granular invalidation", () => {
     // component appearing is what removes the row from the result.
     expect(planQuery(query).readComponents).toEqual(["todo/status", "todo/draft"]);
     const source = sourceWith(() => ["todo_1"]);
-    const store = cache.watch("collection", query, source);
+    const store = results.watch("collection", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -578,7 +578,7 @@ describe("query cache: component-granular invalidation", () => {
   it("invalidates a component-scoped read on a membership change to its model", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     // A plan whose every branch names a component reads those components only;
     // a row entering or leaving the model's set still changes its result.
     const query: Query = {
@@ -587,7 +587,7 @@ describe("query cache: component-granular invalidation", () => {
     };
     expect(planQuery(query).readComponents).toEqual(["todo/status"]);
     const source = sourceWith(() => ["todo_1"]);
-    const store = cache.watch("collection", query, source);
+    const store = results.watch("collection", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -608,14 +608,14 @@ describe("query cache: component-granular invalidation", () => {
   it("re-runs a membership-only plan when membership changes", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const query: Query = {
       ...emptyQuery("todo"),
       groups: [[{ kind: "membership", anyOf: ["group_1"] }]],
     };
     expect(planQuery(query).readComponents).toEqual(["ebb/membership"]);
     const source = sourceWith(() => ["todo_1"]);
-    const store = cache.watch("collection", query, source);
+    const store = results.watch("collection", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -630,14 +630,14 @@ describe("query cache: component-granular invalidation", () => {
     // The grant row exists before the read: the write below is then a content
     // change, not a row entering the platform model's set.
     write(replica, "gm_1", "grant", { actor_id: "a", group_id: "g_1", permissions: [] });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     // A value view reads one component of the shared `ebb` model, not the model.
     const query: Query = {
       ...emptyQuery("ebb", ["ebb/group"]),
       groups: [[{ kind: "field", field: "name", value: "Team" }]],
     };
     const source = sourceWith(() => ["g_1"]);
-    const store = cache.watch("collection", query, source);
+    const store = results.watch("collection", query, source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -653,9 +653,9 @@ describe("query cache: component-granular invalidation", () => {
   it("invalidates a whole-model read on a change that names no component", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", emptyQuery("todo"), source);
+    const store = results.watch("rows", emptyQuery("todo"), source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -676,12 +676,12 @@ describe("query cache: component-granular invalidation", () => {
   it("does not re-run a model read when an ebb/* overlay lands on its row", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     // An `ebb/*` component may sit on a row of any model and never determines
     // the row's model (the prefix is the model namespace), so a `todo/*` read's components
     // are untouched by an edge write.
     const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", emptyQuery("todo"), source);
+    const store = results.watch("rows", emptyQuery("todo"), source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -694,9 +694,9 @@ describe("query cache: component-granular invalidation", () => {
     // A create plus a component write is a row entering the set a rows read
     // scans, so the result re-runs.
     const replica = createReplica();
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = sourceWith(() => replica.iterate("document"));
-    const store = cache.watch("rows", emptyQuery("document"), source);
+    const store = results.watch("rows", emptyQuery("document"), source);
     store.subscribe(() => {});
     await flushTasks();
     expect(source.runs).toBe(1);
@@ -731,11 +731,11 @@ describe("query cache: component-granular invalidation", () => {
   });
 });
 
-describe("query cache: failure", () => {
+describe("query results: failure", () => {
   it("surfaces a failed run and clears it on the next success", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     let shouldFail = true;
     const source: QuerySource<Entity> = {
       ready: async () => {},
@@ -745,7 +745,7 @@ describe("query cache: failure", () => {
         return [row("todo_1")];
       },
     };
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     let notified = 0;
     store.subscribe(() => {
       notified += 1;
@@ -765,7 +765,7 @@ describe("query cache: failure", () => {
   });
 });
 
-describe("query cache: one inactive lifetime (#941)", () => {
+describe("query results: one inactive lifetime (#941)", () => {
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   /**
@@ -805,19 +805,19 @@ describe("query cache: one inactive lifetime (#941)", () => {
     },
   });
 
-  const cacheOver = (
+  const resultsOver = (
     replica: ReturnType<typeof createReplica>,
     residencyTtlMs: number,
-  ): { cache: ReturnType<typeof createQueryCache>; registry: SubscriptionRegistry } => {
+  ): { results: ReturnType<typeof createQueryResults>; registry: SubscriptionRegistry } => {
     const registry = createSubscriptionRegistry(replica, { residencyTtlMs });
-    return { cache: createQueryCache(replica, registry), registry };
+    return { results: createQueryResults(replica, registry), registry };
   };
 
   it("reuses a warm result on remount with no store read and no re-run", async () => {
     const { replica, reads } = readBackReplica();
-    const { cache } = cacheOver(replica, 100);
+    const { results } = resultsOver(replica, 100);
     const counter = { runs: 0 };
-    const first = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const first = results.watch("rows", todoQuery(), readingSource(replica, counter));
     const detach = first.subscribe(() => {});
     await waitFor(() => first.getSnapshot().status === "current");
     expect(counter.runs).toBe(1);
@@ -827,7 +827,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
     // A change to another model is not a change to what the result read.
     write(replica, "note_1", "note", { title: "Peer" });
 
-    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const remount = results.watch("rows", todoQuery(), readingSource(replica, counter));
     expect(remount.getSnapshot()).toMatchObject({ status: "current", loading: false });
     expect(remount.getSnapshot().data).toHaveLength(1);
     const off = remount.subscribe(() => {});
@@ -839,10 +839,10 @@ describe("query cache: one inactive lifetime (#941)", () => {
 
   it("keeps an inactive result stale across a batch it does not read", async () => {
     const { replica } = readBackReplica();
-    const { cache, registry } = cacheOver(replica, 100);
+    const { results, registry } = resultsOver(replica, 100);
     const counter = { runs: 0 };
     const source = readingSource(replica, counter);
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     const detach = store.subscribe(() => {});
     await waitFor(() => store.getSnapshot().status === "current");
     detach();
@@ -853,22 +853,22 @@ describe("query cache: one inactive lifetime (#941)", () => {
     ingest(replica, "todo", "todo_2");
     expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     expect(counter.runs).toBe(1);
-    expect(registry.peek("query", queryCacheKey("rows", todoQuery()))?.revision).toBe(settled);
+    expect(registry.peek("query", queryResultKey("rows", todoQuery()))?.revision).toBe(settled);
 
     // A change to another model reaches nothing this result reads, and must not
     // let the inactive result look current again.
     write(replica, "note_1", "note", { title: "Peer" });
     expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     expect(counter.runs).toBe(1);
-    expect(registry.peek("query", queryCacheKey("rows", todoQuery()))?.revision).toBe(settled);
+    expect(registry.peek("query", queryResultKey("rows", todoQuery()))?.revision).toBe(settled);
   });
 
   it("re-runs once on remount when a relevant change landed while inactive", async () => {
     const { replica, reads } = readBackReplica();
-    const { cache } = cacheOver(replica, 100);
+    const { results } = resultsOver(replica, 100);
     const counter = { runs: 0 };
     const source = readingSource(replica, counter);
-    const first = cache.watch("rows", todoQuery(), source);
+    const first = results.watch("rows", todoQuery(), source);
     const detach = first.subscribe(() => {});
     await waitFor(() => first.getSnapshot().status === "current");
     detach();
@@ -876,12 +876,12 @@ describe("query cache: one inactive lifetime (#941)", () => {
     write(replica, "todo_1", "todo", { title: "Renamed" });
     // The inactive result is marked stale without re-running: nobody is listening.
     expect(counter.runs).toBe(1);
-    expect(cache.watch("rows", todoQuery(), source).getSnapshot()).toMatchObject({
+    expect(results.watch("rows", todoQuery(), source).getSnapshot()).toMatchObject({
       status: "stale",
       loading: false,
     });
 
-    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const remount = results.watch("rows", todoQuery(), readingSource(replica, counter));
     remount.subscribe(() => {});
     await waitFor(() => remount.getSnapshot().status === "current");
     expect(counter.runs).toBe(2);
@@ -891,16 +891,16 @@ describe("query cache: one inactive lifetime (#941)", () => {
 
   it("keeps a result while it still has a subscriber, past the TTL", async () => {
     const { replica } = readBackReplica();
-    const { cache } = cacheOver(replica, 10);
+    const { results } = resultsOver(replica, 10);
     const counter = { runs: 0 };
-    const store = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const store = results.watch("rows", todoQuery(), readingSource(replica, counter));
     const off = store.subscribe(() => {});
     await waitFor(() => store.getSnapshot().status === "current");
 
     // Only an inactive result has a lifetime; a live one is never ended by the
     // clock, so its claims and its result stay as long as the subscriber does.
     await sleep(30);
-    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const remount = results.watch("rows", todoQuery(), readingSource(replica, counter));
     expect(remount.getSnapshot()).toMatchObject({ status: "current", loading: false });
     expect(counter.runs).toBe(1);
     off();
@@ -908,9 +908,9 @@ describe("query cache: one inactive lifetime (#941)", () => {
 
   it("drops the result after the residency TTL and releases the claims it owned", async () => {
     const { replica, reads } = readBackReplica(20);
-    const { cache, registry } = cacheOver(replica, 20);
+    const { results, registry } = resultsOver(replica, 20);
     const counter = { runs: 0 };
-    const store = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const store = results.watch("rows", todoQuery(), readingSource(replica, counter));
     const detach = store.subscribe(() => {});
     await waitFor(() => store.getSnapshot().status === "current");
     detach();
@@ -918,12 +918,12 @@ describe("query cache: one inactive lifetime (#941)", () => {
 
     // The result's lifetime is the same one the released value gets: when it
     // ends, the claims go and the value follows after its own grace period.
-    await waitFor(() => registry.peek("query", queryCacheKey("rows", todoQuery())) === undefined);
+    await waitFor(() => registry.peek("query", queryResultKey("rows", todoQuery())) === undefined);
     expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
     await sleep(40);
     expect(replica.stats().leases.resident).toBe(0);
 
-    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const remount = results.watch("rows", todoQuery(), readingSource(replica, counter));
     expect(remount.getSnapshot()).toMatchObject({ data: undefined, status: "unloaded" });
     remount.subscribe(() => {});
     await waitFor(() => remount.getSnapshot().status === "current");
@@ -934,8 +934,8 @@ describe("query cache: one inactive lifetime (#941)", () => {
 
   it("owns no timer: unsubscribing arms the one retention timer", async () => {
     const { replica } = readBackReplica();
-    const { cache } = cacheOver(replica, 40);
-    const store = cache.watch("rows", todoQuery(), readingSource(replica, { runs: 0 }));
+    const { results } = resultsOver(replica, 40);
+    const store = results.watch("rows", todoQuery(), readingSource(replica, { runs: 0 }));
     const detach = store.subscribe(() => {});
     await waitFor(() => store.getSnapshot().status === "current");
 
@@ -965,14 +965,14 @@ describe("query cache: one inactive lifetime (#941)", () => {
     });
     ingest(replica, "todo", "todo_1");
     write(replica, "todo_1", "todo", { notes: "paged out" });
-    const { cache, registry } = cacheOver(replica, 100);
-    const key = queryCacheKey("rows", todoQuery());
+    const { results, registry } = resultsOver(replica, 100);
+    const key = queryResultKey("rows", todoQuery());
     const source = sourceWith(() => {
       const entity = replica.get("todo_1");
       return entity === undefined ? [] : [entity];
     });
 
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     const off = store.subscribe(() => {});
     await waitFor(() => store.getSnapshot().status === "current");
     off();
@@ -989,7 +989,7 @@ describe("query cache: one inactive lifetime (#941)", () => {
     expect(registry.peek("query", key)?.state).toBe("inactive");
     expect(claimed()).toEqual(["todo/notes", "todo/title"]);
 
-    const remount = cache.watch("rows", todoQuery(), source);
+    const remount = results.watch("rows", todoQuery(), source);
     const offRemount = remount.subscribe(() => {});
     await waitFor(() => remount.getSnapshot().status === "current");
     await flushTasks();
@@ -1002,17 +1002,17 @@ describe("query cache: one inactive lifetime (#941)", () => {
   });
 });
 
-describe("query cache: change-journal floor (#499)", () => {
-  it("forces a full re-run when a slow run lets the window trim past its start", async () => {
+describe("query results: change-journal floor (#499)", () => {
+  it("forces a full re-run when a slow run lets the change journal trim past its start", async () => {
     const replica = createReplica({ journalCapacity: 2 });
     ingest(replica, "todo", "todo_1");
-    const cache = createQueryCache(replica);
+    const results = createQueryResults(replica);
     const source = deferredSource();
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     store.subscribe(() => {});
     await flushTasks();
 
-    // Prime the cache at revision 1.
+    // Prime the results at revision 1.
     source.resolve([row("todo_1")]);
     await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
@@ -1040,7 +1040,7 @@ describe("query cache: change-journal floor (#499)", () => {
   });
 });
 
-describe("query cache: lease ownership (#937)", () => {
+describe("query results: lease ownership (#937)", () => {
   /** A replica that does not hold the row, so a claim is observable. */
   const readBackReplica = (): ReturnType<typeof createReplica> => {
     const rows: Record<string, Entity> = { todo_1: row("todo_1") };
@@ -1050,14 +1050,14 @@ describe("query cache: lease ownership (#937)", () => {
     });
   };
 
-  const cacheOver = (replica: ReturnType<typeof createReplica>) =>
-    createQueryCache(replica, createSubscriptionRegistry(replica, { residencyTtlMs: 20 }));
+  const resultsOver = (replica: ReturnType<typeof createReplica>) =>
+    createQueryResults(replica, createSubscriptionRegistry(replica, { residencyTtlMs: 20 }));
 
   it("leases the components a live result read and keeps them through its inactive lifetime", async () => {
     const replica = readBackReplica();
     await replica.read("todo_1", ["todo/title"]);
-    const cache = cacheOver(replica);
-    const store = cache.watch(
+    const results = resultsOver(replica);
+    const store = results.watch(
       "rows",
       todoQuery(),
       sourceWith(() => [row("todo_1")]),
@@ -1084,7 +1084,7 @@ describe("query cache: lease ownership (#937)", () => {
   it("keeps its claims through a failed run and releases them when the result ends", async () => {
     const replica = readBackReplica();
     await replica.read("todo_1", ["todo/title"]);
-    const cache = cacheOver(replica);
+    const results = resultsOver(replica);
     let shouldFail = false;
     const source: QuerySource<Entity> = {
       ready: async () => {},
@@ -1094,7 +1094,7 @@ describe("query cache: lease ownership (#937)", () => {
         return [row("todo_1")];
       },
     };
-    const store = cache.watch("rows", todoQuery(), source);
+    const store = results.watch("rows", todoQuery(), source);
     const detach = store.subscribe(() => {});
     await flushTasks();
     expect(replica.stats().leases.leased).toBe(1);
@@ -1113,8 +1113,8 @@ describe("query cache: lease ownership (#937)", () => {
   it("keeps its claims through a render throw and releases them when the result ends", async () => {
     const replica = readBackReplica();
     await replica.read("todo_1", ["todo/title"]);
-    const cache = cacheOver(replica);
-    const store = cache.watch("rows", todoQuery(), {
+    const results = resultsOver(replica);
+    const store = results.watch("rows", todoQuery(), {
       ready: async () => {},
       isReady: () => true,
       execute: () => [row("todo_1")],
@@ -1128,7 +1128,7 @@ describe("query cache: lease ownership (#937)", () => {
       }),
     ).toThrow("render");
 
-    // The result is cached for the same lifetime as any other; the claim goes
+    // The result is retained for the same lifetime as any other; the claim goes
     // when the result ends rather than being handed to a subscriber that never
     // existed.
     await flushTasks();

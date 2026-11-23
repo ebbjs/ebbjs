@@ -26,7 +26,7 @@ import {
 import { createClient } from "../client";
 import type { EntityEvent } from "../namespace";
 import type { Query } from "../query";
-import { queryCacheKey, selectionReadComponents } from "../selection";
+import { queryResultKey, selectionReadComponents } from "../selection";
 import type { SyncClientOptions } from "../types";
 import {
   callApplyAction,
@@ -457,7 +457,7 @@ describe("selection: joins lease their targets", () => {
     });
   });
 
-  it("leases a joined target for the life of a cached read", async () => {
+  it("leases a joined target for the life of a retained read", async () => {
     const { client, written } = harness(schema, { residencyTtlMs: 20 });
     const { contentId } = await createLinkedPage(client, written, {
       title: "One",
@@ -493,10 +493,10 @@ describe("selection: joins lease their targets", () => {
   });
 });
 
-describe("selection: cache key", () => {
-  it("gives two selections of the same query different cache keys", () => {
+describe("selection: result key", () => {
+  it("gives two selections of the same query different result keys", () => {
     const { client } = harness(schema);
-    const key = (query: Parameters<typeof queryCacheKey>[1]) => queryCacheKey("rows", query);
+    const key = (query: Parameters<typeof queryResultKey>[1]) => queryResultKey("rows", query);
 
     const title = key(client.note.query().select({ title: true }).toQuery());
     const titleAndStatus = key(client.note.query().select({ title: true, status: true }).toQuery());
