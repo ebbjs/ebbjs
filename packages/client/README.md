@@ -134,6 +134,9 @@ fires on change) and the chain's own `.subscribe(listener)` is the shorthand.
 
 Two chains that lower to the same query share one cached result, so a remount
 reads it back instead of re-running. In React, `useQuery` wraps this surface.
+A chain over already-materialized rows — a row accessor, or a builder from
+`buildQueryBuilder` — has no engine entry, so `.result()` and `.subscribe()`
+refuse rather than keep a second, uncached copy: await the chain to read it.
 
 Name the row a query returns with `QueryRowOf`, passing the schema and the
 `with(...)` join keys you selected. It derives the same projection the query
@@ -369,14 +372,8 @@ The grammar has no `id` predicate: query the collection and select the row, or
 read one with `get(id, { select })`. `limit(n)` is the only paging control;
 cursor pagination is deferred.
 
-A relationship, membership, or existence predicate re-runs on any change to that
-component anywhere, not only on the index key it reads. The dispatcher registers
-component, model, and row dependencies, and a `membership` resolver for row
-subscriptions; a query subscription declares no index dependency, so the
-`relation:<as>/<type>`, `membership`, and `exists:<component>` reads that
-`structuralReads().indices` names never reach the dispatcher (#961). A
-membership write anywhere still touches every query subscription, because every
-query row carries `groupIds` (#962).
+A relationship, membership, or existence predicate currently invalidates on its
+component read set rather than on the index key it reads.
 
 ## Seeding fixtures
 

@@ -20,7 +20,6 @@ import {
   projectFieldValue,
   projectQueryRow,
   projectRow,
-  projectRows,
 } from "../query-builder";
 import { entityRow } from "../test-utils";
 
@@ -98,7 +97,6 @@ describe("projected rows carry the entity id", () => {
       body: undefined,
       id: "t1",
     });
-    expect(projectRows([entity], todo.shape)).toEqual([projectRow(entity, todo.shape)]);
   });
 
   it("projectQueryRow adds the entity id and its group ids", () => {
@@ -159,6 +157,11 @@ describe("buildQueryBuilder — chain mutators", () => {
     const chain = buildQueryBuilder([entityRow("1", "todo", { title: "a" })], todo.shape);
     expect(() => chain.has("title")).toThrow(/carries no component index/);
     expect(() => chain.hasNot("title")).toThrow(/carries no component index/);
+  });
+
+  it("result refuses a chain over already-materialized rows", () => {
+    const chain = buildQueryBuilder([entityRow("1", "todo", { title: "a" })], todo.shape);
+    expect(() => chain.result()).toThrow(/no engine store/);
   });
 
   it("orderBy sorts by field", async () => {

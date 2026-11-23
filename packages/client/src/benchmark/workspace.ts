@@ -38,7 +38,7 @@ export const WORKSPACE_GROUP_ID = "grp_ws";
 export const UPDATED_AT_BASE = 1_700_000_000_000;
 
 /**
- * Distinct bodies the store materializes so the windowed read path is real.
+ * Distinct bodies the store materializes so a store read is real.
  * Bodies are never all materialized: 10k heavy bodies is ~298 MB, and the
  * footprint of the full body set is measured from one representative row.
  */

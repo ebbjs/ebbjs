@@ -105,7 +105,7 @@ export interface QueryStore<T> {
  * How to produce a result: `ready` brings the read model up to date once,
  * `isReady` reports whether it already is, and `execute` reads it. A hydrated
  * replica executes synchronously, so an invalidation re-runs in the same tick;
- * an on-demand source may return a promise, leaving the old result visible as
+ * a store-backed source may return a promise, leaving the old result visible as
  * `stale` until it settles.
  */
 export interface QuerySource<T> {
@@ -653,15 +653,18 @@ export const createQueryCache = (
           });
           try {
             const result = resultOf(handle);
-            if (run.running) {
-              // An in-flight run will settle against the current revision.
-            } else if (result.data === undefined) {
+            // An in-flight run settles against the current revision on its own,
+            // so a remount only starts work the result has not done yet.
+            if (!run.running && result.data === undefined) {
               hydrate(handle, run);
-            } else if (result.error !== null || handle.cursor !== replica.revision) {
+            } else if (
+              !run.running &&
+              (result.error !== null || handle.cursor !== replica.revision)
+            ) {
               // A remount sees the cached (possibly stale) result first; the
               // re-run settles in the same tick for a hydrated replica.
               execute(handle, run, replica.revision);
-            } else {
+            } else if (!run.running) {
               // Nothing relevant landed while the result was inactive, so it is
               // current at this revision: no read, no re-run.
               run.at = handle.cursor;
@@ -682,39 +685,6 @@ export const createQueryCache = (
             handle.release();
           };
         },
-      };
-    },
-  };
-};
-
-/**
- * A one-off store for a chain that does not live in the engine cache (a
- * candidate builder over an already-materialized list). It runs on the first
- * subscriber, then replays its settled snapshot to later ones.
- */
-export const createLocalQueryStore = <T>(run: () => Promise<readonly T[]>): QueryStore<T> => {
-  let snapshot: QueryResult<T> = { ...UNLOADED };
-  const listeners = new Set<() => void>();
-  let started = false;
-  const publish = (next: QueryResult<T>): void => {
-    snapshot = next;
-    // Snapshot so a listener that unsubscribes mid-fan-out cannot skip a peer.
-    for (const listener of Array.from(listeners)) listener();
-  };
-  return {
-    getSnapshot: () => snapshot,
-    subscribe(listener) {
-      listeners.add(listener);
-      if (!started) {
-        started = true;
-        run().then(
-          (data) => publish({ data, status: "current", loading: false, error: null }),
-          (thrown: unknown) =>
-            publish({ data: undefined, status: "failed", loading: false, error: toError(thrown) }),
-        );
-      }
-      return () => {
-        listeners.delete(listener);
       };
     },
   };

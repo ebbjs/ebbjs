@@ -34,7 +34,7 @@
  * the projection, the lease set, and the invalidation key; system components
  * (`ebb/link`, `ebb/membership`, joined targets) are planner-supplied. A
  * projecting terminal narrows the ids first, then acquires the components the
- * page projects — including an on-demand source or join target — while
+ * page projects — including a store-backed source or join target — while
  * `.count()` / `.exists()` / `.toRaw()` never acquire the projection. An
  * unlimited projection is therefore a full read: page it with `limit`.
  *
@@ -94,13 +94,14 @@ import {
 import {
   projectSelectedFields,
   querySelection,
+  selectionBase,
   selectionFieldKeys,
   selectionProjection,
   type ComponentFor,
   type Selection,
 } from "./selection";
 import { componentRowView, type GroupFieldMap } from "./system-row";
-import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
+import type { QueryCache, QueryStore } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
 
 export { projectFieldValue } from "@ebbjs/write";
@@ -240,16 +241,6 @@ export function projectRow<TFields extends Record<string, TSchema>>(
   return { ...projectEntity(entity, shape, migrations, fields), id: entity.id };
 }
 
-/** Project every row in a list. Pure; each row carries the entity id. */
-export function projectRows<TFields extends Record<string, TSchema>>(
-  rows: readonly Entity[],
-  shape: TObject<TFields>,
-  migrations?: ComponentMigrations,
-  fields?: readonly string[] | null,
-): readonly ProjectedRow<TFields>[] {
-  return rows.map((row) => projectRow(row, shape, migrations, fields));
-}
-
 /**
  * Project a materialized entity to a {@link QueryRow}: the shape's
  * fields, the entity id, and the supplied group ids. Pure; both
@@ -383,6 +374,16 @@ export interface QueryContext {
   hydrate(): Promise<void>;
   /** Read migrations for stored component versions, when the schema declares any. */
   readonly migrations?: ComponentMigrations;
+}
+
+/**
+ * The binding a reactive chain needs: the query cache a chain subscribes to,
+ * and the synchronous page read whose result that cache holds. A chain over
+ * already-materialized rows has neither.
+ */
+interface ResultEngine {
+  readonly context: QueryContext;
+  readonly syncRun: (query: Query) => readonly unknown[] | null;
 }
 
 /** Loader for the candidate entity list. Resolved lazily on each materialization. */
@@ -540,15 +541,15 @@ export interface QueryBuilder<
   /**
    * Subscribe to the engine-cached result. The listener fires only when the
    * result changes — a source- or join-type change that leaves it identical
-   * stays silent. No-op for a chain over an already-materialized list, which
-   * carries no engine signal.
+   * stays silent. Refused on a chain over an already-materialized list, which
+   * has no engine binding for a change event.
    */
   subscribe(listener: () => void): () => void;
   /**
    * The reactive result store — `{ data, status, loading, error }` with a
    * stable snapshot between result changes. Every chain lowering to the same
    * query shares one cached entry, so a remount reads it instead of
-   * re-running. A candidate chain gets a one-off store with no invalidation.
+   * re-running. Refused on a candidate chain, which has no cache entry.
    */
   result(): QueryStore<JoinedRow<TFields, TJoined, TRow>>;
   /**
@@ -807,13 +808,8 @@ const expandReads = (reads: readonly string[], context: QueryContext): readonly 
  * when the read selected nothing. A value view's source seed is a scan detail,
  * not a projection, so `.select({})` projects nothing.
  */
-const projectionComponents = (query: Query, context: QueryContext): readonly string[] => {
-  const reads =
-    query.selected !== undefined
-      ? query.selected.components
-      : (query.sourceComponents ?? [`${query.source}/*`]);
-  return expandReads(reads, context);
-};
+const projectionComponents = (query: Query, context: QueryContext): readonly string[] =>
+  expandReads(selectionBase(query), context);
 
 /** The components a join's target rows must hold to project the join. */
 const joinLeaseComponents = (join: Join, context: QueryContext): readonly string[] =>
@@ -862,9 +858,9 @@ const releaseAll = (releases: readonly Release[]): Release => {
 /**
  * Acquire the components the narrowed page projects, and each join target's,
  * before projecting. The narrowing ops already picked the page, so only these
- * rows are read — the two-phase read that makes an on-demand projection legal
- * without materializing the type. The caller releases after projection; a
- * cached result then holds the same components through its subscription.
+ * rows are read — the two-phase read that makes a store-backed projection
+ * legal without materializing the type. The caller releases after projection;
+ * a cached result then holds the same components through its subscription.
  */
 const acquirePage = async (
   rows: readonly Entity[],
@@ -1095,29 +1091,20 @@ function buildChain<
   // by its default instead of sorting unset rows elsewhere.
   const resolveOrderField: FieldResolver = (entity, field) =>
     projectedFieldValue(entity, field, shape, context?.migrations);
-  const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
-    if (context === undefined || syncRun === undefined) {
-      return createLocalQueryStore(async () => {
-        // SAFETY: the candidate chain's own shape and joins produced these rows.
-        return (await runProjected(
-          query,
-          loadExecutor,
-          context,
-          resolveOrderField,
-          projectBase,
-        )) as readonly JoinedRow<TFields, TJoined, TRow>[];
-      });
-    }
+  const resultFor = (
+    query: Query,
+    engine: ResultEngine,
+  ): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
     const patch = patchRun?.(query);
-    return context.queries.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
-      ready: () => context.hydrate(),
-      isReady: () => context.hydrated(),
+    return engine.context.queries.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
+      ready: () => engine.context.hydrate(),
+      isReady: () => engine.context.hydrated(),
       // A page the replica already holds settles synchronously, so its refresh
       // never flashes `stale`. One that must acquire a component or a join
       // target returns the pending run, which the cache publishes as `stale`
       // until it settles.
       execute: () => {
-        const rows = syncRun(query);
+        const rows = engine.syncRun(query);
         if (rows !== null || asyncRun === undefined) {
           return rows as readonly JoinedRow<TFields, TJoined, TRow>[];
         }
@@ -1199,13 +1186,22 @@ function buildChain<
       return executeQuery(query, loadExecutor, resolveOrderField);
     },
     subscribe(listener) {
-      if (context === undefined || syncRun === undefined) return () => {};
-      // A signal never fires on subscribe itself: the first run primes the
+      if (context === undefined || syncRun === undefined) {
+        throw new Error(
+          "subscribe(): a chain over already-materialized rows has no engine binding for a change event; await the chain to re-read",
+        );
+      }
+      // A listener never fires on subscribe itself: the first run primes the
       // cache silently, later result changes wake the listener.
-      return resultFor(query).subscribe(listener, { initial: false });
+      return resultFor(query, { context, syncRun }).subscribe(listener, { initial: false });
     },
     result() {
-      return resultFor(query);
+      if (context === undefined || syncRun === undefined) {
+        throw new Error(
+          "result(): a chain over already-materialized rows has no engine store; await the chain to read it",
+        );
+      }
+      return resultFor(query, { context, syncRun });
     },
     // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
     then(onfulfilled, onrejected) {

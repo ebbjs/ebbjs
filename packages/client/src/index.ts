@@ -96,7 +96,6 @@ export {
   type SelectedRow,
   projectEntity,
   projectRow,
-  projectRows,
   projectQueryRow,
   buildQueryBuilder,
   buildLazyQueryBuilder,

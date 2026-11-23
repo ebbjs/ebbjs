@@ -131,13 +131,13 @@ describe("QueryBuilder.subscribe", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("is a callable no-op for a bare builder with no query context", () => {
+  it("refuses a chain over already-materialized rows", () => {
     const builder = buildQueryBuilder([], todo.shape);
     const seen: string[] = [];
-    const unsub = builder.subscribe(() => seen.push("change"));
 
-    expect(typeof unsub).toBe("function");
-    expect(() => unsub()).not.toThrow();
+    expect(() => builder.subscribe(() => seen.push("change"))).toThrow(
+      /no engine binding for a change event/,
+    );
     expect(seen).toHaveLength(0);
   });
 

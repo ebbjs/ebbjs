@@ -105,7 +105,7 @@ export const selectionFieldKeys = <TFields extends Record<string, TSchema>>(
  * seeds the component it projects; `.select({})` names none, so it projects
  * and leases nothing — the same rule the builder's page acquisition applies.
  */
-const selectionBase = (query: Query): readonly string[] => {
+export const selectionBase = (query: Query): readonly string[] => {
   if (query.selected !== undefined) return query.selected.components;
   return query.sourceComponents ?? [`${query.source}/*`];
 };
@@ -128,49 +128,20 @@ export const selectionReadComponents = (query: Query): readonly string[] => {
 
 /**
  * What a read depends on beyond component values: the models whose row set it
- * observes (a row entering or leaving changes the result) and the replica
- * indices its predicates and joins read.
+ * observes, so a row entering or leaving changes the result.
  */
 export interface StructuralReads {
   /** The models whose membership the result follows. */
   readonly rows: readonly string[];
-  /**
-   * Index reads: `relation:<as>/<type>`, `membership`, `exists:<component>`.
-   *
-   * Exported and tested, but not wired into change dispatch: the query cache
-   * registers only `rows` plus the component read set, never `indices`. The
-   * dispatcher has a `membership` resolver for row subscriptions, but no query
-   * subscription declares an index dependency, so an adjacency, membership, or
-   * existence predicate re-runs on any change to that component anywhere, not
-   * only on the index key it reads (#961).
-   */
-  readonly indices: readonly string[];
 }
 
 /**
  * The structural dependencies of a read. A create or delete names no component,
- * so the source model's row set is a dependency in its own right; a predicate
- * or join that reads an index is named for the same reason, although only
- * {@link StructuralReads.rows} reaches the dispatcher today (#961).
+ * so the source model's row set is a dependency in its own right.
  */
 export const structuralReads = (query: Query): StructuralReads => {
-  if (query.source === "") return { rows: [], indices: [] };
-  const indices = new Set<string>();
-  for (const group of query.groups) {
-    for (const predicate of group) {
-      if (predicate.kind === "relationship") {
-        indices.add(`relation:${predicate.as}/${predicate.type}`);
-      } else if (predicate.kind === "membership") {
-        indices.add("membership");
-      } else if (predicate.kind === "existence") {
-        indices.add(`exists:${predicate.component}`);
-      }
-    }
-  }
-  for (const join of query.joins) {
-    indices.add(join.kind === "membership" ? "membership" : `relation:${join.as}/${join.type}`);
-  }
-  return { rows: [query.source], indices: [...indices] };
+  if (query.source === "") return { rows: [] };
+  return { rows: [query.source] };
 };
 
 /** The field keys a selection projects, or `null` for the whole row. */
