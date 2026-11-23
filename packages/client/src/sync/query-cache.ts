@@ -656,20 +656,19 @@ export const createQueryCache = (
             const result = resultOf(handle);
             // An in-flight run settles against the current revision on its own,
             // so a remount only starts work the result has not done yet.
-            if (!run.running && result.data === undefined) {
-              hydrate(handle, run);
-            } else if (
-              !run.running &&
-              (result.error !== null || handle.cursor !== replica.revision)
-            ) {
-              // A remount sees the cached (possibly stale) result first; the
-              // re-run settles in the same tick for a hydrated replica.
-              execute(handle, run, replica.revision);
-            } else if (!run.running) {
-              // Nothing relevant landed while the result was inactive, so it is
-              // current at this revision: no read, no re-run.
-              run.at = handle.cursor;
-              refresh(handle, run);
+            if (!run.running) {
+              if (result.data === undefined) {
+                hydrate(handle, run);
+              } else if (result.error !== null || handle.cursor !== replica.revision) {
+                // A remount sees the cached (possibly stale) result first; the
+                // re-run settles in the same tick for a hydrated replica.
+                execute(handle, run, replica.revision);
+              } else {
+                // Nothing relevant landed while the result was inactive, so it is
+                // current at this revision: no read, no re-run.
+                run.at = handle.cursor;
+                refresh(handle, run);
+              }
             }
           } catch (thrown) {
             // A listener that throws on the first result, or a source that
