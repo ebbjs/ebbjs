@@ -14,6 +14,7 @@ import { carriesComponent, componentName, isFieldMap, linkEdges, makeHlc } from 
 import type { Action, Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
+import { emptyQuery } from "../../sync/query";
 import {
   type AdjacencyReader,
   forwardMany,
@@ -25,6 +26,7 @@ import {
   createCounterSet,
   createCountingStore,
   createIndexCounter,
+  measureInactiveResult,
   replicaAdjacency,
   replicaRowReader,
 } from "../harness";
@@ -220,6 +222,41 @@ describe("replica read-model workspace", () => {
       const groups = await membershipGroups(reader, adjacency, id, "ebb", groupShape);
       expect(idsOf(groups)).toEqual(distinct(tally.groups.get(id)));
     }
+  });
+
+  it("measures a released result's held rows and bytes (#966)", () => {
+    const { replica } = setup(N);
+
+    const measured = measureInactiveResult(replica, emptyQuery("page"), () =>
+      replica.iterate("page"),
+    );
+
+    expect(measured.entries).toBe(1);
+    expect(measured.rows).toBe(N);
+    expect(measured.bytes).toBeGreaterThan(0);
+    // The released entry does not outlive the measurement: closing the registry
+    // ends it, so a later read finds nothing.
+    expect(replica.stats().entities).toBe(N + N + 1);
+  });
+
+  it("splits its retained bytes into row envelopes, values, and index (#966)", () => {
+    const { replica, workspace } = setup(N);
+    const bytes = replica.bytes();
+
+    expect(bytes.rows).toBeGreaterThan(0);
+    expect(bytes.values).toBeGreaterThan(0);
+    expect(bytes.index).toBeGreaterThan(0);
+    expect(bytes.journal).toBe(0);
+    expect(bytes.unconfirmedWrites).toBe(0);
+    expect(bytes.total).toBe(bytes.rows + bytes.values + bytes.index);
+
+    // The two base categories partition the record's row JSON; only the
+    // 8-byte `,"data":` separator is shared between them.
+    const rowJson = workspace.record.entities.reduce(
+      (sum, row) => sum + Buffer.byteLength(JSON.stringify(row), "utf8"),
+      0,
+    );
+    expect(bytes.rows + bytes.values).toBe(rowJson - 8 * workspace.record.entities.length);
   });
 
   // #946/#957: bodies reach the replica folded whole in production, so this

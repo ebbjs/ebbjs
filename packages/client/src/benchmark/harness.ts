@@ -12,9 +12,12 @@
  */
 
 import type { Entity } from "@ebbjs/core";
-import type { Replica } from "@ebbjs/storage/replica";
+import { jsonBytes, type Replica } from "@ebbjs/storage/replica";
 
+import type { Query } from "../sync/query";
+import { createQueryCache, type QuerySource } from "../sync/query-cache";
 import type { AdjacencyReader } from "../sync/relationship";
+import { createSubscriptionRegistry } from "../sync/subscriptions";
 import { traversalCounter } from "../sync/traversal-counter";
 
 // ---------------------------------------------------------------------------
@@ -246,4 +249,50 @@ export const sampleLatency = async (
     counters: perCall(counters, callsPerBatch),
     degrees,
   };
+};
+
+// ---------------------------------------------------------------------------
+// Inactive results
+// ---------------------------------------------------------------------------
+
+export interface InactiveResultMeasurement {
+  /** Entries still holding a released result. */
+  readonly entries: number;
+  /** Rows those entries' published results hold. */
+  readonly rows: number;
+  /** UTF-8 bytes of the published results' JSON. */
+  readonly bytes: number;
+}
+
+/** The rows a published result holds, or none when it is not a rows result. */
+const heldRows = (result: unknown): readonly unknown[] => {
+  const published = result as { readonly data?: unknown } | undefined;
+  return Array.isArray(published?.data) ? published.data : [];
+};
+
+/**
+ * What a released rows result keeps: subscribe, release the last handle, read
+ * the registry while the entry is `inactive`. Residency expiry is disabled, so
+ * the entry cannot end between the release and the read. The measurement is the
+ * entry's published `QueryResult` — the projected rows — not its claim list.
+ */
+export const measureInactiveResult = <T>(
+  replica: Replica,
+  query: Query,
+  execute: () => readonly T[],
+): InactiveResultMeasurement => {
+  const registry = createSubscriptionRegistry(replica, { residencyTtlMs: 0, watchdog: false });
+  const cache = createQueryCache(replica, registry);
+  const source: QuerySource<T> = { ready: (): void => {}, isReady: (): boolean => true, execute };
+  const result = cache.watch("rows", query, source);
+  const detach = result.subscribe(() => {
+    /* the result is read back through the registry below */
+  });
+  detach();
+
+  const inactive = registry.entries().filter((entry) => entry.state === "inactive");
+  const rows = inactive.reduce((count, entry) => count + heldRows(entry.result).length, 0);
+  const bytes = jsonBytes(inactive.map((entry) => entry.result));
+  registry.close();
+  return { entries: inactive.length, rows, bytes };
 };

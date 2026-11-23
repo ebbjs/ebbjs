@@ -13,12 +13,14 @@ export type {
   Release,
 } from "./leases";
 export { DEFAULT_JOURNAL_CAPACITY, createReplica } from "./replica";
+export { jsonBytes, utf8Bytes } from "./size";
 export type {
   ContentChange,
   MembershipChange,
   MembershipQuery,
   MembershipTransition,
   Replica,
+  ReplicaBytes,
   ReplicaChange,
   ReplicaOptions,
   ReplicaStats,

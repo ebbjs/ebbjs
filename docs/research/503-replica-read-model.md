@@ -41,6 +41,13 @@ the headline now lives.
 - **[measured] A windowed body opens in ~3.6 µs with exactly one store read**, and a pinned re-open
   reads nothing.
 
+**Shape note (added with #966).** The 41.0 MB headline is this note's 60,000-row fixture
+(10,000 `page` + 29,999 `relationship` + 10,001 `entityGroup`/`group`). #820 made links and
+memberships components of their source rows, so the current benchmark builds the same 10,000
+documents as 20,001 metadata rows and measures 31.9 MB of heap; the per-category account is in
+[`966-memory-by-category.md`](966-memory-by-category.md). Every number below stays this note's
+own measurement of the pre-#820 shape, not a current figure.
+
 ## Reference points
 
 | reference                         | value at 10k documents                                                                                                                                                                                               | label                      | where it came from                                                                    |

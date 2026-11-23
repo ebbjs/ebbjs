@@ -43,10 +43,12 @@ import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
 import { createLeaseTable, type LeaseKey, type LeaseTable, type Release } from "./leases";
+import { jsonBytes } from "./size";
 import type {
   MembershipQuery,
   MembershipTransition,
   Replica,
+  ReplicaBytes,
   ReplicaChange,
   ReplicaOptions,
   ReplicaStats,
@@ -800,6 +802,81 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     };
   };
 
+  /** A row's envelope: everything but its component values. */
+  const envelopeBytes = (row: Entity): number =>
+    jsonBytes({
+      id: row.id,
+      model: row.model,
+      exists: row.exists,
+      created_hlc: row.created_hlc,
+      updated_hlc: row.updated_hlc,
+      deleted_hlc: row.deleted_hlc,
+      last_gsn: row.last_gsn,
+    });
+
+  /** A row's values, `data` wrapper included, so `envelope + values` is its JSON minus 8. */
+  const valuesBytes = (row: Entity): number => jsonBytes(row.data);
+
+  /** An empty structure retains nothing, so it must not cost its JSON punctuation. */
+  const recordBytes = (shape: Readonly<Record<string, unknown>>): number =>
+    Object.keys(shape).length === 0 ? 0 : jsonBytes(shape);
+
+  const idIndexBytes = (index: ReadonlyMap<string, ReadonlySet<string>>): number => {
+    const shape: Record<string, readonly string[]> = {};
+    for (const [key, ids] of index) shape[key] = [...ids];
+    return recordBytes(shape);
+  };
+
+  const versionBytes = (): number => {
+    const shape: Record<string, Record<string, number>> = {};
+    for (const [id, stamps] of componentVersions) shape[id] = Object.fromEntries(stamps);
+    return recordBytes(shape);
+  };
+
+  const indexBytes = (): number =>
+    recordBytes(reverseIndex) +
+    recordBytes(forwardIndex) +
+    idIndexBytes(componentIndex) +
+    idIndexBytes(modelIndex) +
+    versionBytes();
+
+  /**
+   * The overlay's own writes, the composed views it caches, and the updates
+   * waiting for a base row. All three exist only because a write is unconfirmed.
+   */
+  const unconfirmedWriteBytes = (): number => {
+    const overlayShape: Record<string, readonly OptimisticWrite[]> = {};
+    for (const [id, writes] of overlay) overlayShape[id] = writes;
+    const orphanShape: Record<string, readonly OrphanUpdate[]> = {};
+    for (const [id, updates] of orphans) orphanShape[id] = updates;
+    let views = 0;
+    for (const row of effective.values()) {
+      if (row === null) continue;
+      views += envelopeBytes(row) + valuesBytes(row);
+    }
+    return recordBytes(overlayShape) + recordBytes(orphanShape) + views;
+  };
+
+  const bytes = (): ReplicaBytes => {
+    let rows = 0;
+    let values = 0;
+    for (const row of entities.values()) {
+      rows += envelopeBytes(row);
+      values += valuesBytes(row);
+    }
+    const index = indexBytes();
+    const journalBytes = journal.length === 0 ? 0 : jsonBytes(journal);
+    const unconfirmedWrites = unconfirmedWriteBytes();
+    return {
+      rows,
+      values,
+      index,
+      journal: journalBytes,
+      unconfirmedWrites,
+      total: rows + values + index + journalBytes + unconfirmedWrites,
+    };
+  };
+
   const changesSince = (from: Revision): readonly ReplicaChange[] => {
     if (from < changeFloor) return [];
     const changes: ReplicaChange[] = [];
@@ -1044,6 +1121,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     componentVersion,
     changesSince,
     stats,
+    bytes,
     relationships: (query: RelationshipQuery): readonly string[] => {
       if (query.sourceId !== undefined) {
         const row = get(query.sourceId);

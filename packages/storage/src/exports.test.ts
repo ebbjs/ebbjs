@@ -39,8 +39,10 @@ describe("@ebbjs/storage subpaths", () => {
       "createLeaseTable",
       "createReplica",
       "foldEntityAction",
+      "jsonBytes",
       "residencyTtlOf",
       "unrefTimer",
+      "utf8Bytes",
     ]);
   }, 20_000);
 
