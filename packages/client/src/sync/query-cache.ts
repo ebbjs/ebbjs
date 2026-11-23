@@ -89,8 +89,9 @@ export interface QueryResult<T> {
 export interface QuerySubscribeOptions {
   /**
    * Whether the first run's completion notifies this listener. Defaults to
-   * true so a React store sees the result land; a public query signal passes
-   * false, because it never fires on subscribe itself.
+   * true so a React store sees the result land; a public change listener
+   * passes false, because it reports change events and never fires on
+   * subscribe itself.
    */
   readonly initial?: boolean;
 }

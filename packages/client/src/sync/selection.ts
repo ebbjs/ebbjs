@@ -129,6 +129,9 @@ export const selectionReadComponents = (query: Query): readonly string[] => {
 /**
  * What a read depends on beyond component values: the models whose row set it
  * observes, so a row entering or leaving changes the result.
+ *
+ * @internal Only `rows` reaches the dispatcher today; #961 adds the index reads
+ * back together with the resolvers that honour them.
  */
 export interface StructuralReads {
   /** The models whose membership the result follows. */
@@ -137,7 +140,9 @@ export interface StructuralReads {
 
 /**
  * The structural dependencies of a read. A create or delete names no component,
- * so the source model's row set is a dependency in its own right.
+ * so the source model's row set is a dependency in its own right. This is the
+ * `sources` set the query cache registers; {@link StructuralReads} names the
+ * index reads #961 adds back.
  */
 export const structuralReads = (query: Query): StructuralReads => {
   if (query.source === "") return { rows: [] };

@@ -1,14 +1,15 @@
 /**
- * Tests for `QueryBuilder.subscribe` — the reactive trigger scoped to
- * the chain's source model.
+ * Tests for `QueryBuilder.subscribe` — the change listener for a chain that
+ * lowers to the engine-cached result.
  *
- * `builder.subscribe(listener)` fires whenever an entity of the
- * builder's source type materializes. The listener is a bare
- * "something changed" signal: terminal methods re-read the latest
- * snapshot, so a listener re-materializes to observe the new result.
- * Membership is deliberately not filtered here — `EntityNamespace.subscribe`
- * is the membership-filtered surface; this trigger exists so a
- * matching row whose non-filtered field changed still wakes the chain.
+ * `builder.subscribe(listener)` fires on a change event the result store
+ * evaluated, and only when that event leaves the cached result different: a
+ * change to the source or a joined model that preserves the result stays
+ * silent, and the listener never fires on subscribe itself — the first run
+ * only primes the cache. Membership is not filtered here;
+ * `EntityNamespace.subscribe` is the membership-filtered surface. A chain over
+ * already-materialized rows has no engine binding for a change event, so it
+ * refuses `subscribe()` and must be awaited to re-read.
  */
 
 import { describe, it, expect } from "vitest";

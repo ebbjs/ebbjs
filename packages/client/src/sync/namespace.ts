@@ -946,9 +946,9 @@ export function createEntityNamespace<
         };
       }
       const query = queryForFilter(entityName, filter, view);
-      // The cached result is the matching id list, so the invariant is that a
-      // field edit on a row that already matches is not a membership
-      // `ReplicaChange`, while a join, delete, or insert is.
+      // The cached result is the matching id list, so the listener fires only
+      // when the set of matching ids changes: a field edit that leaves a row
+      // matching edits the row but not the result.
       const store = replica.queries.watch<string>("collection", query, {
         ready: () => replica.hydrate(),
         isReady: () => replica.hydrated(),
