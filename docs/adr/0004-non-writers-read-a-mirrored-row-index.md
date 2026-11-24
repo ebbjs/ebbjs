@@ -34,11 +34,12 @@ costs (ADR 0002). Paying it per tab is the price of independence.
    outbox flush, and the durable writes. Nothing else writes the store.
 2. Every other instance reads through **replica access**: a mirrored row index
    and the writer's change batches. It runs no stream and applies no Actions.
-3. One unit crosses the boundary: the **index entry**, which is the element of
-   #977's row-list snapshot. A batch carries the writer's own row changes plus
-   the entries of the rows whose index moved, so a reader never classifies a
-   change and never derives an index. The writer's revision numbers are kept, so
-   a subscription revision means the same thing on both sides.
+3. One unit crosses the boundary: the **index entry** — #971's `RowEntry`, which
+   is also the element of #977's row-list snapshot. A batch carries the writer's
+   own row changes plus the entries of the rows whose index moved, so a reader
+   classifies nothing and folds nothing: it runs the writer's own index
+   derivation over the entry. The writer's revision numbers are kept, so a
+   subscription revision means the same thing on both sides.
 4. A reader's index is the writer's index: same entry shape, same derived
    indices, one derivation function. Residency is per instance — each keeps its
    own copies of the values its own readers claim — and no claim crosses the
