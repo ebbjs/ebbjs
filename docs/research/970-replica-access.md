@@ -28,9 +28,10 @@ builds against. The decision itself is recorded in
   `components`, `componentVersion`, `membershipLinks`). The two that do not fit are writer-side or
   already condemned: `stats()` belongs to scope eviction and the writer, and `fullyResident` is what
   #981 deletes. One new step beside `ingest` — `mirror(entries, changes)` — is the whole seam.
-- **[decision] One unit crosses the boundary:** the row index entry, which is the element of #977's
-  row-list snapshot. A batch carries the writer's own `ReplicaChange`s plus the entries of the rows
-  whose index moved. A reader never classifies a change and never derives an index.
+- **[decision] One unit crosses the boundary:** the row index entry — #971's `RowEntry`, which is
+  also the element of #977's row-list snapshot. A batch carries the writer's own `ReplicaChange`s
+  plus the entries of the rows whose index moved. The reader classifies nothing and folds nothing;
+  it runs the writer's own `index.set` over the entry.
 - **[decision] Values the index does not hold come from the durable store** (#980), read-only for a
   reader. Nothing about a value crosses the boundary.
 - **The price is one row index per tab.** **[measured]** 3.8 MB of JSON and 13.6 MB of V8 heap at
@@ -110,13 +111,15 @@ shrinks the part B adds; #992's budget is what bounds values once this lands.
 The same module, with the fold replaced by a mirror:
 
 ```
-writer: ingest(action, delta, position)  → materialize → applyEntry(...) → journal
-reader: mirror(batch)                    →              applyEntry(...) → journal
+writer: ingest(action, delta, position)  →  materialize  →  entryOf(row) → index.set → journal
+reader: mirror(batch)                    →                 index.set(entry)            → journal
 ```
 
-`applyEntry` is #971's derivation (model index, component existence, adjacency, versions) applied to
-one entry; the writer already has it as `reconcileIndex`/`publish` in
-`packages/storage/src/replica/replica.ts`, and #971 extracts it. A mirror replica is the same
+The derivation is #971's, not a second one: `entryOf(row)` turns a materialized row into the entry,
+and `index.set(entry)` diffs it against the previous entry and moves the derived model, component,
+edge and membership maps. The writer already has that shape as `reconcileIndex`/`publish` in
+`packages/storage/src/replica/replica.ts`; #971 extracts it. Both sides run the same `set`, which is
+what makes a reader's index the writer's index by construction rather than by agreement. A mirror replica is the same
 structure with the index fed by entries instead of the fold, plus #973's carried set separate from
 values and #972's residency rule for the copies it holds.
 
@@ -191,21 +194,11 @@ The types the feed carries, the seam a reader implements, and the split of `Repl
 provisional except where #990 owns them; "replica access" is that issue's term for this interface.
 
 ```ts
-/** One row's place in the index: #977's row-list element, reused as the feed's unit. */
-interface IndexEntry {
-  readonly id: string;
-  readonly model: string;
-  readonly exists: boolean;
-  readonly created_hlc: HLCTimestamp | null;
-  readonly updated_hlc: HLCTimestamp;
-  readonly deleted_hlc: HLCTimestamp | null;
-  readonly last_gsn: number;
-  /** The carried set (#973): present is not resident. */
-  readonly components: readonly string[];
-  readonly versions: Readonly<Record<string, number>>;
-  /** The values filters and sorts use; everything else is projection-only. */
-  readonly fields: Readonly<Record<string, FieldValue>>;
-}
+/**
+ * The feed's unit is #971's `RowEntry` — the object the row index stores and the element #977
+ * persists. It crosses an instance boundary, so it stays plain data: no `Map`, no class, no
+ * function, and no derived field that `index.set` rebuilds.
+ */
 
 type FeedMessage =
   | {
@@ -214,7 +207,7 @@ type FeedMessage =
       readonly position: number;
       readonly revision: Revision;
       readonly session: SessionFacts;
-      readonly entries: readonly IndexEntry[];
+      readonly entries: readonly RowEntry[];
     }
   | {
       readonly kind: "batch";
@@ -223,7 +216,7 @@ type FeedMessage =
       readonly revision: Revision;
       readonly changes: readonly ReplicaChange[];
       /** Final state per id; a change that moved no index entry carries none. */
-      readonly entries: readonly IndexEntry[];
+      readonly entries: readonly RowEntry[];
     }
   | {
       readonly kind: "action";
@@ -298,7 +291,8 @@ keeps mobile and one-tab web on exactly today's path.
 1. **Durable before announced.** A revision is published only after the values it names are durable,
    so a reader at that revision can serve them and a writer can die at any point.
 2. **The feed carries the index, not the fold.** Entries plus the writer's own changes, never
-   Actions. A reader classifies nothing and derives nothing.
+   Actions. A reader classifies nothing and materializes nothing; its only derivation is the
+   `index.set` both sides run.
 3. **Revisions are the writer's.** A change keeps the revision it was journalled at; a batch reports
    its newest. Subscription revisions compare across instances.
 4. **A baseline is atomic.** One synchronous turn in the writer produces `seq`, `position`,
