@@ -21,3 +21,9 @@ touches every entry that declared that index, which is the breadth the component
 read set gave before. The component dependency stays in the read set for claims
 and re-checks, but leaves the dispatch set where an index covers it, so a
 resolver fallback, never a narrower guess, is what remains.
+
+The coverage holds once a result claims values: a covered join target model also
+covers the exact components the result claims from it, and a self-relation keeps
+its source model dependency because source and target share one. A differential
+test compares every retained result with a fresh plan run after each write and
+pins both rules (#1002).
