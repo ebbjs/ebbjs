@@ -372,8 +372,13 @@ The grammar has no `id` predicate: query the collection and select the row, or
 read one with `get(id, { select })`. `limit(n)` is the only paging control;
 cursor pagination is deferred.
 
-A relationship, membership, or existence predicate currently invalidates on its
-component read set rather than on the index key it reads.
+A relationship or existence predicate invalidates on the derived index key it
+reads: dispatch touches a subscription whose relation target changed, or whose
+component was written, instead of every subscription that reads the component.
+A link write still touches every reader of that relation — the journal names the
+component it touched, not the target an edge dropped — and a membership scope is
+declared as a `scope` index while the read set keeps `ebb/membership` broad
+until #962 narrows it.
 
 ## Seeding fixtures
 

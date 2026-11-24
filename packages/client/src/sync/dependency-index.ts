@@ -3,9 +3,10 @@
  *
  * One dispatcher owns one journal position and a set of inverted indices: which
  * subscriptions read a component, read a model whole, watch a row, or read a
- * derived index (`index:<name>` — a membership subject, a group scope). A batch
- * then costs the subscriptions it touches plus one lookup per dependency kind
- * per change, instead of every subscription checked against every change.
+ * derived index (`index:<name>` — a membership subject, a group scope, a
+ * relation target, a component's presence). A batch then costs the
+ * subscriptions it touches plus one lookup per dependency kind per change,
+ * instead of every subscription checked against every change.
  *
  * The dispatcher is the only place a batch is read: `changesSince` is called
  * once, and the entries that survive the indices are the ones any work
@@ -15,7 +16,9 @@
  *
  * Gaps. A revision below the retained window, or an empty batch on an advanced
  * revision (a replica `load` replaces the journal), cannot be narrowed against:
- * every subscription may have changed, so every one is handed the batch.
+ * every subscription may have changed, so every one is handed the batch. A
+ * resolver that cannot name a change's keys is the same answer for the one
+ * index it serves, so the entries that declared it are handed the batch.
  *
  * The index is maintained as a map from entry to what it declared, so removing
  * or reseating an entry costs its own dependencies rather than a scan.
@@ -24,16 +27,16 @@
 import { componentModel } from "@ebbjs/core";
 import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
-/** One derived-index read: `index:<name>`, keyed by `key`. */
+/**
+ * One derived-index read: `index:<name>`, keyed by `key`.
+ */
 export interface IndexDependency {
   /**
-   * The index name. `membership` keys a member entity id to the row
-   * subscriptions watching it. Any other name is a namespace the dispatcher
-   * serves generically: a change resolves to zero or more keys and a lookup
-   * matches the subscriber on that bare key, so `scope` groups on a group id
-   * rather than on a `scope:<groupId>` string. Nothing in production declares
-   * a non-membership index today; `scope` is the namespace the issue describes
-   * for a future one.
+   * The index name: `membership` for the member entity a row subscription
+   * files, `scope` for a group a read is scoped to, or a namespace name the
+   * query read declares — `relation:<as>/<type>`, `exists:<component>`. The
+   * dispatcher serves each from the resolver registered under its name, or
+   * under the namespace it starts with.
    */
   readonly index: string;
   /** The key to match under that index: a bare id, not an `index:<key>` form. */
@@ -98,15 +101,26 @@ export interface ChangeJournal {
   subscribe(listener: () => void): () => void;
 }
 
-/** The keys one change names under one derived index. */
-export type IndexResolver = (change: ReplicaChange) => readonly string[];
+/**
+ * The keys one change names under one derived index, or `null` when the change
+ * cannot be resolved against the index's current state — a link write whose
+ * removed target the journal does not name, a row an eviction left no trace of.
+ * `null` is not "no keys": every entry that declared the index is touched, the
+ * same breadth the component read set gave before the index existed. The index
+ * name is passed so a namespace resolver (one function serving every
+ * `relation:<as>/<type>`) can answer for the index it was asked about.
+ */
+export type IndexResolver = (change: ReplicaChange, index: string) => readonly string[] | null;
 
 export interface ChangeDispatcherOptions<T> {
   readonly journal: ChangeJournal;
   /**
-   * How a change resolves to derived-index keys, per index name. A resolver is
-   * asked on every change, so it answers cheaply and returns nothing for the
-   * changes it does not apply to.
+   * How a change resolves to derived-index keys, by index name. A key ending in
+   * `*` is a namespace and serves every index name that starts with it, which
+   * is how dynamically named indices (`relation:<as>/<type>`,
+   * `exists:<component>`) are served without enumerating them. Only names an
+   * entry actually declared are resolved, so an unused resolver costs nothing.
+   * A declared index with no resolver is unresolvable, like a `null` answer.
    */
   readonly indices?: Readonly<Record<string, IndexResolver>>;
   /** Hand one batch to one touched subscription. */
@@ -181,7 +195,29 @@ export const createChangeDispatcher = <T>(
   options: ChangeDispatcherOptions<T>,
 ): ChangeDispatcher<T> => {
   const { journal, onChange } = options;
-  const resolvers = Object.entries(options.indices ?? {});
+  const exact = new Map<string, IndexResolver>();
+  const namespaces: { readonly prefix: string; readonly resolve: IndexResolver }[] = [];
+  for (const [name, resolve] of Object.entries(options.indices ?? {})) {
+    if (name.endsWith("*")) namespaces.push({ prefix: name.slice(0, -1), resolve });
+    else exact.set(name, resolve);
+  }
+  /** One lookup per declared index name, memoized for the dispatcher's life. */
+  const resolverCache = new Map<string, IndexResolver | null>();
+  const resolverFor = (index: string): IndexResolver | null => {
+    const cached = resolverCache.get(index);
+    if (cached !== undefined) return cached;
+    let found = exact.get(index) ?? null;
+    if (found === null) {
+      for (const candidate of namespaces) {
+        if (index.startsWith(candidate.prefix)) {
+          found = candidate.resolve;
+          break;
+        }
+      }
+    }
+    resolverCache.set(index, found);
+    return found;
+  };
   const entries = new Map<T, Indexed>();
   const byComponent = new Map<string, Set<T>>();
   /** Readers of a model whole (`<model>/*`), for a content change. */
@@ -195,6 +231,8 @@ export const createChangeDispatcher = <T>(
   const byRow = new Map<string, Set<T>>();
   /** `index:<name>` → key → entries. */
   const byIndex = new Map<string, Map<string, Set<T>>>();
+  /** `index:<name>` → every entry that declared it, for an unresolvable change. */
+  const byIndexAll = new Map<string, Set<T>>();
   let nextSeq = 0;
   let dispatched: Revision = journal.revision;
   let counts: DispatchCounts = { touched: 0, lookups: 0, scanWork: 0 };
@@ -213,6 +251,9 @@ export const createChangeDispatcher = <T>(
       if (bucket === undefined) continue;
       removeFrom(bucket, key, entry);
       if (bucket.size === 0) byIndex.delete(index);
+    }
+    for (const index of new Set(indexed.indices.map((dependency) => dependency.index))) {
+      removeFrom(byIndexAll, index, entry);
     }
   };
 
@@ -240,10 +281,20 @@ export const createChangeDispatcher = <T>(
           collectInto(touched, byModel.get(componentModel(component)));
         }
       }
-      for (const [index, resolve] of resolvers) {
-        for (const key of resolve(change)) {
+      for (const [index, buckets] of byIndex) {
+        const resolve = resolverFor(index);
+        const keys = resolve === null ? null : resolve(change, index);
+        if (keys === null) {
+          // The change cannot be narrowed against this index, so every entry
+          // that declared it is handed the batch: the component read set's
+          // breadth, never fewer.
           lookups += 1;
-          collectInto(touched, byIndex.get(index)?.get(key));
+          collectInto(touched, byIndexAll.get(index));
+          continue;
+        }
+        for (const key of keys) {
+          lookups += 1;
+          collectInto(touched, buckets.get(key));
         }
       }
     }
@@ -315,6 +366,11 @@ export const createChangeDispatcher = <T>(
         let bucket = byIndex.get(index);
         if (bucket === undefined) byIndex.set(index, (bucket = new Map()));
         addTo(bucket, key, entry);
+      }
+      for (const index of new Set(indexed.indices.map((dependency) => dependency.index))) {
+        let all = byIndexAll.get(index);
+        if (all === undefined) byIndexAll.set(index, (all = new Set()));
+        all.add(entry);
       }
     },
     remove: drop,

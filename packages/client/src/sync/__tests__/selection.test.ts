@@ -26,7 +26,7 @@ import {
 import { createClient } from "../client";
 import type { EntityEvent } from "../namespace";
 import type { Query } from "../query";
-import { queryResultKey, selectionReadComponents } from "../selection";
+import { queryResultKey, selectionReadComponents, structuralReads } from "../selection";
 import type { SyncClientOptions } from "../types";
 import {
   callApplyAction,
@@ -289,6 +289,61 @@ describe("selection: system reads are planner-supplied", () => {
 
     const joined = client.note.query().select({ title: true }).with({ groups: true }).toQuery();
     expect(readSet(joined)).toEqual(["note/title", "ebb/membership", "ebb/group"]);
+  });
+
+  it("derives the index reads a change resolves against (#961)", async () => {
+    const { client } = harness(schema);
+
+    const joined = client.page
+      .query()
+      .select({ title: true })
+      .where("content", "pc_1")
+      .with({ content: true })
+      .toQuery();
+    expect(structuralReads(joined)).toEqual({
+      rows: ["page"],
+      indices: [{ index: "relation:content/page", key: "pc_1" }],
+      // A link write falls back to the whole relation, so the intersection of a
+      // predicate and a forward join is keyed on the target, not the model.
+      covered: ["ebb/link", "page_content/*"],
+    });
+
+    const exists = client.note.query().select({ title: true }).has("body").toQuery();
+    expect(structuralReads(exists)).toEqual({
+      rows: ["note"],
+      indices: [{ index: "exists:note/body", key: "note/body" }],
+      covered: ["note/body"],
+    });
+
+    const scoped = client.note.query().select({ title: true }).where("groups", "g_1").toQuery();
+    expect(structuralReads(scoped)).toEqual({
+      rows: ["note"],
+      indices: [{ index: "scope", key: "g_1" }],
+      covered: [],
+    });
+  });
+
+  it("names no index for a predicate that matches nothing", async () => {
+    const { client } = harness(schema);
+    const none = client.page.query().select({ title: true }).where("content", []).toQuery();
+
+    // `anyOf: null` matches nothing today and forever, so no change can move it.
+    expect(structuralReads(none)).toEqual({ rows: ["page"], indices: [], covered: [] });
+  });
+
+  it("keeps a join's target model when another OR group does not pin the relation", async () => {
+    const { client } = harness(schema);
+    const dnf = client.page
+      .query()
+      .select({ title: true })
+      .where("content", "pc_1")
+      .or("title", "other")
+      .with({ content: true })
+      .toQuery();
+
+    // A row from the `title` group may join any target, so only the link read
+    // is keyed; the target model stays the dispatch key for the join.
+    expect(structuralReads(dnf).covered).toEqual(["ebb/link"]);
   });
 
   it("keeps predicate and ordering components in the lease set without projecting them", async () => {
