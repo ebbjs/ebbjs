@@ -485,8 +485,14 @@ const indexDependencies = (entry: {
   // narrower key, and answers `null` when it cannot narrow, which touches every
   // entry that declared the index — the component set's breadth, never less.
   const covered = new Set(entry.covered);
+  // A covered whole-model dependency also covers the exact components claims
+  // add later: a joined target row's resident values are claimed as
+  // `user/name`, and leaving that in the dispatch set would undo the join
+  // narrowing the index was introduced for.
+  const isCovered = (component: string): boolean =>
+    covered.has(component) || covered.has(`${componentModel(component)}/*`);
   return {
-    components: [...entry.reads.components].filter((component) => !covered.has(component)),
+    components: [...entry.reads.components].filter((component) => !isCovered(component)),
     models: [...entry.reads.models].filter((model) => !covered.has(`${model}/*`)),
     sources: [...entry.reads.sources],
     indices: entry.indices,

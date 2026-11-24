@@ -185,6 +185,9 @@ const relationCovers = (
   for (const join of query.joins) {
     if (join.kind !== "relationship" || join.direction !== "forward") continue;
     if (join.cardinality !== "one") continue;
+    // A self-relation's target model is also the source model: covering it
+    // would drop the source's own projected components from dispatch.
+    if (join.target === query.source) continue;
     if (!keyed.has(relationIndex(join.as, join.type))) continue;
     const pinned = query.groups.every((group) =>
       group.some(
