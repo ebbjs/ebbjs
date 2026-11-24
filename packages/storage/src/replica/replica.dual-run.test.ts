@@ -137,7 +137,16 @@ const equivalent = async (
   deepStrictEqual(actual, expected, `get(${id})`);
 
   const actualRows = sorted(replica.iterate(type));
-  const expectedRows = sorted(await adapter.entities.query(type));
+  // `iterate` answers from the row index: a map-shaped user component is named
+  // on the row but its value lives in the cache, never in the index.
+  const expectedRows = sorted(await adapter.entities.query(type)).map((row) => ({
+    ...row,
+    data: {
+      fields: Object.fromEntries(
+        Object.entries(row.data.fields).filter(([, value]) => !isFieldMap(value)),
+      ),
+    },
+  }));
   deepStrictEqual(actualRows, expectedRows, `iterate(${type})`);
 };
 

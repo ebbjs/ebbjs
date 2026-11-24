@@ -250,13 +250,14 @@ describe("replica read-model workspace", () => {
     expect(bytes.unconfirmedWrites).toBe(0);
     expect(bytes.total).toBe(bytes.rows + bytes.values + bytes.index);
 
-    // The two base categories partition the record's row JSON; only the
-    // 8-byte `,"data":` separator is shared between them.
+    // The two base categories partition the record's row JSON: `rows` is the
+    // envelope and `values` the bare field map, so the `,"data":{"fields":`
+    // wrapper shared between them is the 19 bytes neither counts.
     const rowJson = workspace.record.entities.reduce(
       (sum, row) => sum + Buffer.byteLength(JSON.stringify(row), "utf8"),
       0,
     );
-    expect(bytes.rows + bytes.values).toBe(rowJson - 8 * workspace.record.entities.length);
+    expect(bytes.rows + bytes.values).toBe(rowJson - 19 * workspace.record.entities.length);
   });
 
   // #946/#957: bodies reach the replica folded whole in production, so this

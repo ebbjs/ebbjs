@@ -1329,8 +1329,23 @@ describe("replica: retained bytes by category (#966)", () => {
     });
 
     const bytes = replica.bytes();
-    // The only bytes between the two categories are the 8 that spell `,"data":`.
-    expect(bytes.rows + bytes.values).toBe(Buffer.byteLength(JSON.stringify(row), "utf8") - 8);
+    // `rows` counts the entry envelope and `values` its always-resident fields;
+    // the index's own maps are the third category.
+    expect(bytes.rows).toBe(
+      Buffer.byteLength(
+        JSON.stringify({
+          id: row.id,
+          model: row.model,
+          exists: row.exists,
+          created_hlc: row.created_hlc,
+          updated_hlc: row.updated_hlc,
+          deleted_hlc: row.deleted_hlc,
+          last_gsn: row.last_gsn,
+        }),
+        "utf8",
+      ),
+    );
+    expect(bytes.values).toBe(Buffer.byteLength(JSON.stringify(row.data.fields), "utf8"));
     expect(bytes.index).toBeGreaterThan(0);
     expect(bytes.journal).toBe(0);
     expect(bytes.unconfirmedWrites).toBe(0);
@@ -2194,7 +2209,9 @@ describe("replica: a row a read installs from the store (#500)", () => {
 
     // The record is a snapshot of the materialized view, not a durability
     // claim: what a read installed is in memory exactly as a folded value is.
+    // The record is written in the index's ascending id order.
     expect(replica.toRecord().entities).toEqual([
+      documentRow("doc_1"),
       entity({
         id: "e_1",
         model: "todo",
@@ -2204,7 +2221,6 @@ describe("replica: a row a read installs from the store (#500)", () => {
         updated_hlc: makeHlc(10),
         last_gsn: 1,
       }),
-      documentRow("doc_1"),
     ]);
   });
 
@@ -2242,7 +2258,7 @@ describe("replica: a row a read installs from the store (#500)", () => {
       vi.useRealTimers();
     });
 
-    it("releases a read value once its grace period elapses, journalling nothing", async () => {
+    it("keeps a store-installed leaf after its grace period, journalling nothing", async () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         residencyTtlMs: 1_000,
@@ -2257,9 +2273,10 @@ describe("replica: a row a read installs from the store (#500)", () => {
 
       await vi.advanceTimersByTimeAsync(1);
 
-      // The value left the composed view, and that is not a content change: a
-      // derived reader sees no revision move and no journal entry.
-      expect(replica.get("doc_1")).toBeUndefined();
+      // A leaf is always resident in its row index entry, so a claim running
+      // out cannot take it away. The release is still not a content change: no
+      // revision move and no journal entry.
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
       expect(replica.revision).toBe(revision);
       expect(replica.changesSince(revision)).toEqual([]);
       expect(replica.stats().leases).toEqual({
@@ -2289,7 +2306,8 @@ describe("replica: a row a read installs from the store (#500)", () => {
       expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
 
       await vi.advanceTimersByTimeAsync(400);
-      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+      expect(reads).toEqual(["doc_1"]);
     });
 
     it("never expires a value under a live claim", async () => {
@@ -2309,9 +2327,10 @@ describe("replica: a row a read installs from the store (#500)", () => {
       expect(await reading).toEqual(documentRow("doc_1"));
       expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
 
-      // The release that ends the claim starts a fresh grace period.
+      // The release that ends the claim starts a fresh grace period; the leaf
+      // is always resident, so the row stays either way.
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
     });
 
     it("keeps a read value indefinitely when the grace period is disabled", async () => {
@@ -2566,10 +2585,10 @@ describe("replica: content and membership changes (#939)", () => {
     expect(replica.revision).toBe(revision);
     expect(replica.changesSince(revision)).toEqual([]);
 
-    // The release path is residency, not content: the value leaves the replica
-    // when the grace period elapses and nothing journals for it.
+    // The release path is residency, not content: the leaf stays in the row
+    // index and nothing journals for the grace period ending.
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.get("doc_1")).toEqual(stored);
     expect(replica.revision).toBe(revision);
     expect(replica.changesSince(revision)).toEqual([]);
     vi.useRealTimers();
@@ -3080,7 +3099,7 @@ describe("replica: residency follows the claim (#943)", () => {
     expect(reads).toHaveLength(1);
   });
 
-  it("releases a row a read installed after its grace period, and re-reads it next time", async () => {
+  it("keeps a leaf a row a read installed after its grace period", async () => {
     vi.useFakeTimers();
     try {
       const reads: string[] = [];
@@ -3097,12 +3116,12 @@ describe("replica: residency follows the claim (#943)", () => {
 
       await vi.advanceTimersByTimeAsync(1_000);
 
-      // The row exists only because the read installed it, so it leaves whole
-      // and the next read asks the store again.
-      expect(replica.get(noteId)).toBeUndefined();
-      expect(replica.stats()).toMatchObject({ components: 0, leases: { resident: 0 } });
+      // The leaf is part of the row index now, so the row stays and a later
+      // read is already resident.
+      expect(replica.get(noteId)?.data.fields.body).toEqual(leaf("300 KB body", "u_body", 10));
+      expect(replica.stats()).toMatchObject({ components: 4, leases: { resident: 0 } });
       await replica.read(noteId, ["note/body"]);
-      expect(reads).toHaveLength(2);
+      expect(reads).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
@@ -3203,7 +3222,7 @@ describe("replica: residency from leases, not declarations (#943)", () => {
       updated_hlc: makeHlc(10),
     });
 
-  it("installs a component a read claims from the store, and releases the row when its grace period ends", async () => {
+  it("installs a component a read claims from the store, and keeps the leaf after its grace period", async () => {
     vi.useFakeTimers();
     try {
       const reads: string[] = [];
@@ -3224,8 +3243,8 @@ describe("replica: residency from leases, not declarations (#943)", () => {
       release();
       await vi.advanceTimersByTimeAsync(1_000);
 
-      // The row exists only because the read installed it, so it leaves whole.
-      expect(replica.get("note_1")).toBeUndefined();
+      // The row's values are always-resident leaves, so the row stays.
+      expect(replica.get("note_1")?.data.fields.body).toEqual(leaf("300 KB body", "u_body", 10));
       expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
     } finally {
       vi.useRealTimers();
@@ -3350,7 +3369,7 @@ describe("replica: one grace period per value (#943)", () => {
       expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
 
       await vi.advanceTimersByTimeAsync(500);
-      expect(replica.get(noteId)).toBeUndefined();
+      expect(replica.get(noteId)?.data.fields.body).toEqual(leaf("body", "u_body", 10));
     } finally {
       vi.useRealTimers();
     }
@@ -3394,7 +3413,182 @@ describe("replica: one grace period per value (#943)", () => {
 
       release();
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(replica.get(noteId)).toBeUndefined();
+      expect(replica.get(noteId)?.data.fields.body).toEqual(leaf("local body", "u_body", 20));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("replica: the row index owns the query lookups (#971)", () => {
+  const storedDoc = (): Entity => ({
+    id: "doc_1",
+    model: "doc",
+    data: {
+      fields: {
+        title: leaf("One", "u_title", 10),
+        content: map({ run_1: leaf("body", "u_run", 10) }),
+        link: {
+          map: { author: { map: { wrote: { map: { user_1: leaf(true, "u_link", 10) } } } } },
+        },
+      },
+    },
+    exists: true,
+    created_hlc: makeHlc(10),
+    updated_hlc: makeHlc(10),
+    deleted_hlc: null,
+    last_gsn: 10,
+  });
+
+  it("leaves every index read unchanged through a value's install and expiry", async () => {
+    vi.useFakeTimers();
+    try {
+      const reads: string[] = [];
+      const replica = createReplica({
+        residencyTtlMs: 1_000,
+        readComponent: async (id, component) => {
+          reads.push(`${id}:${component}`);
+          return storedDoc();
+        },
+      });
+
+      await replica.read("doc_1", ["doc/content"]);
+      const revision = replica.revision;
+      const components = () => ({
+        content: replica.components("doc/content"),
+        link: replica.components("ebb/link"),
+        rows: replica.iterate("doc").map((row) => row.id),
+        edges: replica.relationships({ as: "author", type: "wrote", targetId: "user_1" }),
+      });
+      const before = components();
+      expect(replica.isComponentResident("doc_1", "doc/content")).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      // The map value left the cache; existence and every index read did not.
+      expect(replica.isComponentResident("doc_1", "doc/content")).toBe(false);
+      expect(replica.get("doc_1")?.data.fields.content).toBeUndefined();
+      expect(components()).toEqual(before);
+      expect(replica.revision).toBe(revision);
+      expect(replica.changesSince(revision)).toEqual([]);
+
+      await replica.read("doc_1", ["doc/content"]);
+      expect(reads).toEqual(["doc_1:doc/content", "doc_1:doc/content"]);
+      expect(replica.isComponentResident("doc_1", "doc/content")).toBe(true);
+      expect(components()).toEqual(before);
+      expect(replica.revision).toBe(revision);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("moves model, component, edge and membership lookups through one write path", () => {
+    const replica = createReplica();
+    // A component write before its create places a model-less placeholder.
+    ingest(
+      replica,
+      patch({
+        actionId: "a_patch",
+        updateId: "u_patch",
+        entityId: "doc_1",
+        model: "doc",
+        gsn: 1,
+        ms: 10,
+        fields: { title: leaf("One", "u_title", 10) },
+      }),
+      1,
+    );
+    expect(replica.get("doc_1")?.exists).toBe(false);
+    expect(replica.iterate("doc").map((row) => row.id)).toEqual(["doc_1"]);
+
+    // The create settles its model; the optimistic edge and membership reach
+    // the lookups before any echo.
+    ingest(
+      replica,
+      create({
+        actionId: "a_create",
+        updateId: "u_create",
+        entityId: "doc_1",
+        model: "doc",
+        gsn: 2,
+      }),
+      2,
+    );
+    const local: Action = {
+      id: "a_local",
+      actor_id: "user_1",
+      hlc: makeHlc(20),
+      gsn: 0,
+      updates: [
+        {
+          id: "u_local_link",
+          subject_id: "doc_1",
+          component: "ebb/link",
+          method: "merge",
+          data: {
+            map: { author: { map: { wrote: { map: { user_1: leaf(true, "u_local", 20) } } } } },
+          },
+        },
+      ],
+    };
+    replica.optimistic(local);
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "user_1" })).toEqual([
+      "doc_1",
+    ]);
+    replica.discard("a_local");
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "user_1" })).toEqual([]);
+
+    // A tombstone removes the row from the live relationship reads while its
+    // components stay in the index.
+    ingest(
+      replica,
+      {
+        id: "a_delete",
+        actor_id: "user_1",
+        hlc: makeHlc(30),
+        gsn: 3,
+        updates: [{ id: "u_delete", subject_id: "doc_1", method: "delete", data: null }],
+      },
+      3,
+    );
+    expect(replica.components("doc/title")).toEqual(["doc_1"]);
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "user_1" })).toEqual([]);
+  });
+
+  it("leaves an overlaid row's index reads unchanged when a value's grace ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const replica = createReplica({
+        residencyTtlMs: 1_000,
+        readComponent: async () => storedDoc(),
+      });
+      replica.optimistic({
+        id: "a_local",
+        actor_id: "user_1",
+        hlc: makeHlc(20),
+        gsn: 0,
+        updates: [
+          {
+            id: "u_local",
+            subject_id: "doc_1",
+            component: "doc/title",
+            method: "merge",
+            data: leaf("Local", "u_local", 20),
+          },
+        ],
+      });
+      await replica.read("doc_1", ["doc/content"]);
+      const revision = replica.revision;
+      const reads = () => ({
+        content: replica.components("doc/content"),
+        rows: replica.iterate("doc").map((row) => row.id),
+      });
+      const before = reads();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(reads()).toEqual(before);
+      expect(replica.revision).toBe(revision);
     } finally {
       vi.useRealTimers();
     }

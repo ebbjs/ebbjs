@@ -928,8 +928,9 @@ describe("query results: one inactive lifetime (#941)", () => {
     remount.subscribe(() => {});
     await waitFor(() => remount.getSnapshot().status === "current");
     expect(counter.runs).toBe(2);
-    // The value is gone, so this run reads it from the store again.
-    expect(reads()).toBe(2);
+    // The value is a leaf and stays in the row index, so the re-run projects
+    // it without going back to the store.
+    expect(reads()).toBe(1);
   });
 
   it("owns no timer: unsubscribing arms the one retention timer", async () => {
