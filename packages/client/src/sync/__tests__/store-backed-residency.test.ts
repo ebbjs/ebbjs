@@ -255,18 +255,21 @@ describe("a synced row is resident", () => {
     });
   });
 
-  it("releases a row a read installed once its grace period elapses, journaling nothing", async () => {
+  it("releases a read value once its grace period elapses, journaling nothing", async () => {
     const { client, written } = harness(pageSchema, { residencyTtlMs: 10 });
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
     client.replica.evict([bodyId]);
 
     await client.page_body.get(bodyId);
-    expect(client.replica.get(bodyId)).toBeDefined();
+    expect(client.replica.isComponentResident(bodyId, bodyComponent)).toBe(true);
     const revision = client.replica.revision;
 
-    await waitFor(() => client.replica.get(bodyId) === undefined);
+    await waitFor(() => !client.replica.isComponentResident(bodyId, bodyComponent));
 
-    // Expiry is a residency event: no content change, no journal entry.
+    // The map-shaped body left the value cache, but the row and the component
+    // it carries stay in the index. Expiry journals nothing.
+    expect(client.replica.get(bodyId)).toBeDefined();
+    expect(client.replica.components(bodyComponent)).toEqual([bodyId]);
     expect(client.replica.revision).toBe(revision);
     expect(client.replica.changesSince(revision)).toEqual([]);
     expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
@@ -375,14 +378,18 @@ describe("residency per row", () => {
     expect(client.replicaStats.leases.resident).toBe(0);
   });
 
-  it("re-reads a row the replica released instead of losing it", async () => {
+  it("keeps a row a read installed instead of losing it", async () => {
     const { client } = harness(noteSchema, { residencyTtlMs: 10 });
     await seedNote(client);
     client.replica.evict([noteId]);
 
     expect(await client.note.get(noteId)).toMatchObject({ body: "300 KB body" });
-    await waitFor(() => client.replica.get(noteId) === undefined);
+    await waitFor(() => client.replicaStats.leases.resident === 0);
 
+    // A leaf value is always resident in the row index, so the row survives
+    // the grace period and the next read projects it without a store round
+    // trip that would have to rebuild its existence.
+    expect(client.replica.get(noteId)).toBeDefined();
     expect(await client.note.get(noteId)).toMatchObject({ body: "300 KB body" });
     expect(client.replica.components("note/body")).toEqual([noteId]);
   });

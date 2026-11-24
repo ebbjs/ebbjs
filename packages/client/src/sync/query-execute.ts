@@ -41,8 +41,11 @@ import { recordResultRows } from "./traversal-counter";
  * read, the adjacency indices, and component existence. The scan is only
  * materialized for a group that has nothing but field filters and
  * negative existence; an indexed group reaches its rows through
- * {@link PlanExecutor.get}. A candidate-only chain supplies the rows and
- * nothing else, because it can never plan an indexed predicate.
+ * {@link PlanExecutor.get}. A scan answers with index rows, which carry the
+ * values filters and sorts decide on; `get` answers with the composed row, so
+ * projection after acquisition reads the value cache too. A candidate-only
+ * chain supplies the rows and nothing else, because it can never plan an
+ * indexed predicate.
  */
 export interface PlanExecutor {
   scan(type: string): readonly Entity[];
@@ -53,7 +56,7 @@ export interface PlanExecutor {
   components(component: string): readonly string[];
 }
 
-/** Read straight off the replica's materialized rows and indices. */
+/** Read straight off the replica: scans from the row index, rows composed. */
 export const createReplicaExecutor = (replica: Replica): PlanExecutor => ({
   scan: (type) => recordScan(replica.iterate(type)),
   get: (id) => recordRowRead(replica.get(id)),

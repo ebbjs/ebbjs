@@ -137,12 +137,13 @@ export interface ReplicaStats {
  *
  * The categories partition the base rows and the state around them:
  *
- * - `rows` — the row envelopes: id, model, existence, timestamps, last gsn.
- * - `values` — every component value with its per-field `update_id`/`hlc`
- *   envelope, together with the row's `data` wrapper. A row's `rows + values`
- *   is therefore its JSON minus the 8-byte `,"data":` separator.
- * - `index` — the model, component, and adjacency indices, and the declared
- *   version stamped on each component.
+ * - `rows` — the row entry envelopes: id, model, existence, timestamps,
+ *   last gsn.
+ * - `values` — each entry's always-resident fields (leaves and `ebb/*`
+ *   components) plus the separate value cache, all with their per-field
+ *   `update_id`/`hlc` envelope.
+ * - `index` — the derived model, component, edge and membership maps. Versions
+ *   live on their entry, not here.
  * - `journal` — the retained change journal, including a discarded prefix a
  *   trim has not compacted yet.
  * - `unconfirmedWrites` — optimistic writes the server has not echoed, the
@@ -194,9 +195,10 @@ export interface MembershipQuery {
  * Reads return the replica's own row objects (shared, not cloned), tombstones
  * included; callers must treat them as immutable.
  *
- * A row the replica holds carries a value for every component it knows about:
- * a component whose value is absent was never delivered or has left with the
- * row, and the local store is its read source.
+ * A row the replica holds has an index entry that answers its model, the
+ * components it carries, its live edges and its membership. Leaf and `ebb/*`
+ * values are always resident in that entry; a map-shaped user component may
+ * have left the value cache, and the local store is its read source.
  */
 export interface Replica {
   readonly revision: Revision;
@@ -217,16 +219,16 @@ export interface Replica {
    */
   base(id: string): Entity | undefined;
   /**
-   * Every row of `model`, whatever optional components it carries. Served by
-   * the model index with the overlay's model overrides layered on top.
+   * Every row of `model`, whatever optional components it carries, as the row
+   * index answers it: `data.fields` is the entry's always-resident set, so a
+   * map-shaped user value is named but not included.
    */
   iterate(model: string): readonly Entity[];
   /**
    * Whether the replica holds a value for every component `row` carries. Asked
    * of a row read from the local store, it answers whether the replica's own
    * copy is complete — the rule that keeps a partial copy from standing in for
-   * the store's row. A row the replica folded is always fully resident: a row
-   * leaves whole rather than losing a component.
+   * the store's row.
    */
   fullyResident(row: Entity): boolean;
   /**
@@ -280,16 +282,15 @@ export interface Replica {
   bytes(): ReplicaBytes;
 
   /**
-   * Distinct live targets out of `(as, type, sourceId)` — a read of the
-   * source row's `ebb/link` component — or distinct live sources pointing at
-   * `(as, type, targetId)` from the reverse index, ascending.
+   * Distinct live targets out of `(as, type, sourceId)`, read from the source
+   * entry's edges, or distinct live sources pointing at `(as, type, targetId)`
+   * from the row index, ascending.
    */
   relationships(query: RelationshipQuery): readonly string[];
   /**
-   * Ids currently carrying `component` (`<type>/<field>`) in the composed
-   * view, ascending. A component is present on a row iff the replica holds its
-   * value, so a query reading existence costs its index rather than a row
-   * filter.
+   * Ids currently carrying `component` (`<type>/<field>`), ascending. The
+   * carried set lives in the row index, separately from whether the value is
+   * resident, so this read never touches the value cache.
    */
   components(component: string): readonly string[];
   /**

@@ -140,9 +140,10 @@ _Avoid_: shape, type
 **Existence index**:
 The component-keyed index answering "which entities carry this component" —
 derived ETS state on the server (rebuilt from `cf_actions` on boot, not a
-column family), and `componentIndex` in the replica. The replica also keeps a
-**model index** (model → ids) for `query()`, and an optional **archetype
-index** (component set → ids) to skip intersecting.
+column family), and one map inside the replica's **row index**. The row index
+also owns model → ids, the live adjacency and membership keys, and each row's
+carried component set and versions. The server may also keep an optional
+**archetype index** (component set → ids) to skip intersecting.
 _Avoid_: type index, presence index
 
 **Existence**:

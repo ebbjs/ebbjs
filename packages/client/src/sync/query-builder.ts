@@ -706,7 +706,10 @@ export function buildReplicaQueryBuilder<
     const executor = replicaExecutorFor(context, view);
     const rows = executePlan(planQuery(query), executor, resolveField);
     if (pageNeedsAcquisition(rows, query, executor, context)) return null;
-    return projectResultRows(rows, query, executor, context, projectBase);
+    // Narrowing reads index rows. A projection reads the composed row, whose
+    // value cache may hold what the index deliberately does not.
+    const page = rows.map((row) => executor.get(row.id) ?? row);
+    return projectResultRows(page, query, executor, context, projectBase);
   };
   const asyncRun = (query: Query): Promise<readonly unknown[]> =>
     runProjected(query, replicaExecutor(context, view), context, resolveField, projectBase);

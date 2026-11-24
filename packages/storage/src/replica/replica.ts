@@ -2,10 +2,9 @@ import {
   componentField,
   fieldComponent,
   isComponentUpdate,
-  isRowCreate,
-  linkTargets,
   type Action,
   type Entity,
+  type FieldValue,
   type Update,
 } from "@ebbjs/core";
 
@@ -15,34 +14,14 @@ import {
   withAdoptedMapFields,
   withWireMapFields,
 } from "../internal/materialize";
-import {
-  applyComponentDelta,
-  buildComponentIndexFrom,
-  componentSetDelta,
-  componentIds,
-  touchedComponentSet,
-  type ComponentIndex,
-} from "../internal/component-index";
+import { touchedComponentSet } from "../internal/component-index";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
-import {
-  applyIndexDelta,
-  forwardIndexDelta,
-  forwardIndexEntriesFor,
-  forwardMembershipIndexKey,
-  indexEntriesFor,
-  liveMembershipLinks,
-  liveSourceIds,
-  membershipIndexKey,
-  reverseIndexDelta,
-  reverseIndexKey,
-  type IndexEntry,
-  type ReverseIndex,
-} from "../internal/reverse-index";
 import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
 import { createLeaseTable, type LeaseKey, type LeaseTable, type Release } from "./leases";
+import { componentsOfRow, createRowIndex, entryOf, type RowEntry } from "./row-index";
 import { jsonBytes } from "./size";
 import type {
   MembershipQuery,
@@ -86,7 +65,7 @@ interface OrphanUpdate {
   readonly position: number;
 }
 
-/** A composed view plus the components it is known to carry. */
+/** A composed view plus the components the row carries. */
 interface Snapshot {
   readonly row: Entity | null;
   readonly components: readonly string[];
@@ -101,41 +80,131 @@ interface PendingRead {
 }
 
 /**
- * Mutable in-place core. `entities` is the materialized base (what `toRecord`
- * persists), `overlay` composes optimistic writes over it, and `effective`
- * caches the composed view for overlaid ids so a read never recomposes.
+ * A durable base the overlay is composed over. It exists only while a row has
+ * optimistic writes; every other row's base is its index entry plus the value
+ * cache.
+ */
+interface BaseState {
+  readonly row: Entity | null;
+  readonly versions: Readonly<Record<string, number>>;
+}
+
+const sameFields = (
+  a: Readonly<Record<string, FieldValue>>,
+  b: Readonly<Record<string, FieldValue>>,
+): boolean => {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => a[key] === b[key]);
+};
+
+const rowMetaEquals = (a: Entity, b: Entity): boolean =>
+  a.id === b.id &&
+  a.model === b.model &&
+  a.exists === b.exists &&
+  a.created_hlc === b.created_hlc &&
+  a.updated_hlc === b.updated_hlc &&
+  a.deleted_hlc === b.deleted_hlc &&
+  a.last_gsn === b.last_gsn;
+
+const entityOfEntry = (entry: RowEntry, data: Entity["data"]): Entity => ({
+  id: entry.id,
+  model: entry.model,
+  data,
+  exists: entry.exists,
+  created_hlc: entry.createdHlc,
+  updated_hlc: entry.updatedHlc,
+  deleted_hlc: entry.deletedHlc,
+  last_gsn: entry.lastGsn,
+});
+
+const rowFromEntry = (entry: RowEntry, extra?: Readonly<Record<string, FieldValue>>): Entity =>
+  entityOfEntry(entry, {
+    fields: extra === undefined ? entry.fields : { ...entry.fields, ...extra },
+  });
+
+/** The values a row carries that live outside its entry: map-shaped user components. */
+const extraFieldsOf = (row: Entity, entry: RowEntry): Readonly<Record<string, FieldValue>> => {
+  const extra: Record<string, FieldValue> = {};
+  for (const [field, value] of Object.entries(row.data.fields)) {
+    if (entry.fields[field] === undefined) extra[field] = value;
+  }
+  return extra;
+};
+
+interface Envelope {
+  readonly id: string;
+  readonly model: string;
+  readonly exists: boolean;
+  readonly created_hlc: string | null;
+  readonly updated_hlc: string;
+  readonly deleted_hlc: string | null;
+  readonly last_gsn: number;
+}
+
+const envelopeShape = (row: Envelope): Envelope => ({
+  id: row.id,
+  model: row.model,
+  exists: row.exists,
+  created_hlc: row.created_hlc,
+  updated_hlc: row.updated_hlc,
+  deleted_hlc: row.deleted_hlc,
+  last_gsn: row.last_gsn,
+});
+
+/** A row's envelope: everything but its component values. */
+const envelopeBytes = (entry: RowEntry): number =>
+  jsonBytes(
+    envelopeShape({
+      id: entry.id,
+      model: entry.model,
+      exists: entry.exists,
+      created_hlc: entry.createdHlc,
+      updated_hlc: entry.updatedHlc,
+      deleted_hlc: entry.deletedHlc,
+      last_gsn: entry.lastGsn,
+    }),
+  );
+
+/** An empty structure retains nothing, so it must not cost its JSON punctuation. */
+const recordBytes = (shape: Readonly<Record<string, unknown>>): number =>
+  Object.keys(shape).length === 0 ? 0 : jsonBytes(shape);
+
+/**
+ * Mutable in-place core. `index` owns every row's place in the lookups a query
+ * reads; `values` owns the component values that may leave memory. Together
+ * they replace the old base row map: `get` composes the entry's always-resident
+ * fields with whatever values are resident, and `iterate` answers with the
+ * entry alone.
  *
- * A row's values are its components' residency: every row the replica holds
- * carries a value for every component it knows about, so there is no
- * component-level "known but absent" half to track. What decides how long a
- * value stays is the lease table, keyed `(entity, component)`. A row folded
- * from the log is the replica's own data and no claim can take it away; a row
- * a read installed from the local store is claimed by that read, and leaves
- * whole once the last claim's grace period ends (`storeRows`). There is no cap
- * and no declared policy (#933, #943).
- *
- * `modelIndex` indexes the base by model; `iterate` layers the overlay's model
- * overrides on top of it. `componentIndex` tracks the composed view's component
- * set alongside the adjacency indices, and is likewise derived rather than
- * persisted.
+ * The overlay still composes optimistic writes over the durable base. For an
+ * overlaid row the base is kept in `overlaidBase`, so discarding the writes can
+ * restore it; every other row's base is its index entry plus the value cache.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const declaredVersion = (component: string): number =>
     options?.versions?.declared(component) ?? 1;
 
-  const entities = new Map<string, Entity>();
-  /** The declared version each component's value was materialized at (#804). */
-  const componentVersions = new Map<string, Map<string, number>>();
+  const index = createRowIndex();
+  /** Values that do not live in an entry: the map-shaped user components. */
+  const values = new Map<string, Readonly<Record<string, FieldValue>>>();
   /**
-   * Rows whose values a read installed from the local store rather than folding
-   * from the log. Their components are lease-owned, so the last expired claim
-   * takes the row with it; a row the log folded is never expirable.
+   * The row objects iterate and get answer with, one per entry. They are views
+   * of entries and values, not a third retained category, so `bytes` counts
+   * the data they point at rather than the caches. Keeping them stable is what
+   * makes a shared row read share one object.
    */
-  const storeRows = new Set<string>();
-  const modelIndex = new Map<string, Set<string>>();
-  let componentIndex: ComponentIndex = new Map();
+  const entryRows = new Map<string, Entity>();
+  const composedRows = new Map<string, Entity>();
+  /**
+   * Components whose values a read installed from the local store, and which
+   * therefore may leave again when their last claim expires. A value the log
+   * folded is the replica's own data and never expires.
+   */
+  const storeOwned = new Map<string, Set<string>>();
   const overlay = new Map<string, OptimisticWrite[]>();
-  const effective = new Map<string, Entity | null>();
+  /** The durable base under an overlaid row, kept only while writes are pending. */
+  const overlaidBase = new Map<string, BaseState>();
   const orphans = new Map<string, OrphanUpdate[]>();
   const journalCapacity = journalCapacityOf(options?.journalCapacity);
   /**
@@ -160,14 +229,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   // splice folds the dead prefix away once it dominates the array.
   let journalStart = 0;
 
-  // Adjacency over the composed view, not the base map: the reverse index must
-  // see optimistic edges. It shares the index module's entry derivation, so the
-  // replica cannot drift from the adapters. The forward index is the
-  // entity-keyed membership direction only: a source's own edges are a read of
-  // its row's `ebb/link` component.
-  let reverseIndex: ReverseIndex = {};
-  let forwardIndex: ReverseIndex = {};
-
   let revision: Revision = 0;
   let changeFloor: Revision = 0;
   let lastPosition = 0;
@@ -184,29 +245,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
     }
   };
-
-  const addToModel = (model: string, id: string): void => {
-    const ids = modelIndex.get(model);
-    if (ids === undefined) modelIndex.set(model, new Set([id]));
-    else ids.add(id);
-  };
-
-  const removeFromModel = (model: string, id: string): void => {
-    const ids = modelIndex.get(model);
-    if (ids === undefined) return;
-    ids.delete(id);
-    if (ids.size === 0) modelIndex.delete(model);
-  };
-
-  /** Present components of a row's field map, an `ebb/*` overlay under `ebb`. */
-  const fieldComponentsOf = (row: Entity): readonly string[] =>
-    Object.keys(row.data.fields).map((field) => fieldComponent(row.model, field));
-
-  /**
-   * Every component a row carries. A row's fields are its components: the
-   * replica holds no value it cannot project, so nothing is "known but absent".
-   */
-  const presenceOfRow = (row: Entity): readonly string[] => fieldComponentsOf(row);
 
   const hasReadInFlight = (id: string): boolean => {
     const reads = inFlightReads.get(id);
@@ -232,26 +270,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (reads === undefined || reads.get(component) !== pending) return;
     reads.delete(component);
     if (reads.size === 0) inFlightReads.delete(id);
-  };
-
-  /**
-   * Fold the writes that waited behind a cold read, and settle them like any
-   * other write: the base takes them, and `resync` republishes the composed
-   * view, reconciles the derived indices, and journals what they changed. A
-   * row they create is therefore visible to `components()` and the adjacency
-   * index, not only by id. `pending` is the view settled just before the fold,
-   * for a caller that has already published one. Returns whether anything was
-   * replayed, so the caller can notify once for the batch.
-   */
-  const replayBufferedWrites = (id: string, pending?: Snapshot): boolean => {
-    const buffered = pendingWrites.get(id);
-    if (buffered === undefined) return false;
-    pendingWrites.delete(id);
-    const previous = pending ?? capture(id);
-    for (const entry of buffered)
-      applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
-    resync(id, previous);
-    return true;
   };
 
   /** Drop every read in flight, so no result lands in a replaced view. */
@@ -284,9 +302,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   /**
    * The row as the set a read is drawn from sees it: a tombstone is a value, so
    * a tombstoned row is not in the set even while the replica holds its row, and
-   * a row no create has filed under a model yet belongs to none. Residency is
-   * not part of it: a row the policy keeps no value of is still a row `get` and
-   * `iterate` answer with, and a read draws its ids from there.
+   * a row no create has filed under a model yet belongs to none.
    */
   const sourceRow = (row: Entity | null): Entity | null =>
     row !== null && row.model !== "" && row.deleted_hlc === null ? row : null;
@@ -309,37 +325,159 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
   };
 
-  const viewOf = (id: string): Entity | null =>
-    effective.has(id) ? (effective.get(id) ?? null) : (entities.get(id) ?? null);
+  /**
+   * The composed row: the entry's always-resident fields plus the values the
+   * cache holds. A missing map value makes the row partial; a query acquires
+   * before projecting.
+   */
+  const viewOf = (id: string): Entity | null => {
+    const entry = index.get(id);
+    if (entry === undefined) return null;
+    const extra = values.get(id);
+    if (extra === undefined || Object.keys(extra).length === 0) {
+      return entryRows.get(id) ?? null;
+    }
+    const fields = { ...entry.fields, ...extra };
+    const cached = composedRows.get(id);
+    const data =
+      cached !== undefined && sameFields(cached.data.fields, fields) ? cached.data : { fields };
+    const row = entityOfEntry(entry, data);
+    if (cached !== undefined && rowMetaEquals(cached, row)) return cached;
+    composedRows.set(id, row);
+    return row;
+  };
 
-  const presenceOfView = (id: string): readonly string[] => {
-    const row = viewOf(id);
-    return row === null ? [] : presenceOfRow(row);
+  /** Write the index entry for a settled base row, and replace its cached views. */
+  const setIndexedRow = (
+    id: string,
+    row: Entity | null,
+    versions: Readonly<Record<string, number>>,
+  ): void => {
+    if (row === null) {
+      index.remove(id);
+      entryRows.delete(id);
+      composedRows.delete(id);
+      values.delete(id);
+      return;
+    }
+    const entry = entryOf(row, versions);
+    index.set(entry);
+    const previous = entryRows.get(id);
+    const data =
+      previous !== undefined && sameFields(previous.data.fields, entry.fields)
+        ? previous.data
+        : { fields: entry.fields };
+    entryRows.set(id, entityOfEntry(entry, data));
+    const extra = extraFieldsOf(row, entry);
+    if (Object.keys(extra).length === 0) values.delete(id);
+    else values.set(id, extra);
+  };
+
+  /** Remove a row's base, overlay, and index traces without journaling. */
+  const removeRow = (id: string): void => {
+    index.remove(id);
+    entryRows.delete(id);
+    composedRows.delete(id);
+    values.delete(id);
+    storeOwned.delete(id);
+    overlay.delete(id);
+    overlaidBase.delete(id);
+    orphans.delete(id);
+    cancelReadsFor(id);
+  };
+
+  /** The durable base under a row: the overlaid snapshot, or the index entry. */
+  const baseStateOf = (id: string): BaseState | null => {
+    const base = overlaidBase.get(id);
+    if (base !== undefined) return base;
+    const entry = index.get(id);
+    if (entry === undefined) return null;
+    return { row: rowFromEntry(entry, values.get(id)), versions: entry.versions };
+  };
+
+  const versionsForRow = (
+    previous: Readonly<Record<string, number>>,
+    row: Entity | null,
+    written: ReadonlySet<string> = new Set(),
+  ): Readonly<Record<string, number>> => {
+    if (row === null) return {};
+    const versions: Record<string, number> = {};
+    for (const component of componentsOfRow(row)) {
+      versions[component] = written.has(component)
+        ? declaredVersion(component)
+        : (previous[component] ?? declaredVersion(component));
+    }
+    return versions;
+  };
+
+  const updateComponent = (update: Update): string | null =>
+    isComponentUpdate(update) && update.method !== "drop" ? update.component : null;
+
+  /** The component an update stamps at its declaration, if it writes a value. */
+  const writtenComponents = (updates: readonly Update[]): ReadonlySet<string> => {
+    const written = new Set<string>();
+    for (const update of updates) {
+      const component = updateComponent(update);
+      if (component !== null) written.add(component);
+    }
+    return written;
+  };
+
+  /**
+   * A row with the value cache folded in. A base row under optimistic writes
+   * keeps only durable values; the map values a read installed live here.
+   */
+  const withResidentValues = (id: string, row: Entity | null): Entity | null => {
+    const extra = values.get(id);
+    if (row === null || extra === undefined) return row;
+    return { ...row, data: { fields: { ...extra, ...row.data.fields } } };
+  };
+
+  /** Compose the overlay's writes over a base row. */
+  const composeRow = (id: string, base: Entity | null): Entity | null => {
+    let row = withResidentValues(id, base);
+    for (const write of overlay.get(id) ?? []) {
+      row = applyUpdate(row, write.update, 0, write.hlc, RESIDENT_MAP_FIELDS);
+    }
+    return row;
+  };
+
+  /**
+   * Settle the index on the composed view. A row with no pending writes brings
+   * its base back into the index; an overlaid row is recomposed and set again,
+   * which is the one place a write reaches the model, component, edge and
+   * membership maps.
+   */
+  const deriveIndex = (id: string): void => {
+    const overlaid = overlaidBase.get(id);
+    if (overlaid === undefined) return;
+    const writes = overlay.get(id) ?? [];
+    const row = composeRow(id, overlaid.row);
+    const versions =
+      writes.length === 0
+        ? versionsForRow(overlaid.versions, row)
+        : versionsForRow(
+            overlaid.versions,
+            row,
+            writtenComponents(writes.map((write) => write.update)),
+          );
+    if (writes.length === 0) overlaidBase.delete(id);
+    if (row === null) removeRow(id);
+    else setIndexedRow(id, row, versions);
   };
 
   const capture = (id: string): Snapshot => ({
     row: viewOf(id),
-    components: presenceOfView(id),
+    components: index.get(id)?.components ?? [],
   });
 
   const get = (id: string): Entity | undefined => viewOf(id) ?? undefined;
 
-  const iterate = (model: string): readonly Entity[] => {
-    // The base index answers for every composed row, but the overlay can know a
-    // row the base has never seen — an optimistic create — or hold the create
-    // that settles a placeholder's provisional model, so its rows win.
-    const ids = new Set(modelIndex.get(model) ?? []);
-    for (const [id, row] of effective) {
-      if (row !== null && row.model === model) ids.add(id);
-      else ids.delete(id);
-    }
-    const rows: Entity[] = [];
-    for (const id of ids) {
-      const row = get(id);
-      if (row !== undefined) rows.push(row);
-    }
-    return rows;
-  };
+  const iterate = (model: string): readonly Entity[] =>
+    index.idsOfModel(model).flatMap((id) => {
+      const row = entryRows.get(id);
+      return row === undefined ? [] : [row];
+    });
 
   /** Append an update waiting for a base row, keyed by its subject. */
   const bufferUpdate = (buffer: Map<string, OrphanUpdate[]>, entry: OrphanUpdate): void => {
@@ -349,23 +487,13 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     else pending.push(entry);
   };
 
-  /** Record the version an explicit component write materializes at. */
-  const stampVersion = (id: string, component: string, version: number): void => {
-    const stamps = componentVersions.get(id);
-    if (stamps === undefined) componentVersions.set(id, new Map([[component, version]]));
-    else stamps.set(component, version);
-  };
-
-  const forgetVersion = (id: string, component: string): void => {
-    const stamps = componentVersions.get(id);
-    if (stamps === undefined) return;
-    stamps.delete(component);
-    if (stamps.size === 0) componentVersions.delete(id);
-  };
-
+  /**
+   * Fold one Update into the base. A row with optimistic writes folds into the
+   * base snapshot the writes are composed over; every other row folds into its
+   * index entry and value cache.
+   */
   const foldIntoBase = (update: Update, gsn: number, hlc: string, position: number): void => {
     const id = update.subject_id;
-    const previous = entities.get(id) ?? null;
 
     // The local store row is read asynchronously; keep updates that land while
     // that read is in flight so the install replays them instead of hiding
@@ -375,15 +503,21 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       return;
     }
 
-    // A create names no component, so it has no version to stamp: it only
-    // makes the row exist.
-    if (!isRowCreate(update)) {
-      if (update.method === "drop") forgetVersion(id, update.component);
-      else if (update.method !== "delete") {
-        stampVersion(id, update.component, declaredVersion(update.component));
-      }
+    const overlaid = overlaidBase.get(id);
+    if (overlaid !== undefined) {
+      const next = applyUpdate(overlaid.row, update, gsn, hlc, RESIDENT_MAP_FIELDS);
+      const component = updateComponent(update);
+      const versions =
+        component === null
+          ? overlaid.versions
+          : versionsForRow(overlaid.versions, next, new Set([component]));
+      overlaidBase.set(id, { row: next, versions });
+      storeOwned.delete(id);
+      return;
     }
 
+    const entry = index.get(id);
+    const previous = entry === undefined ? null : rowFromEntry(entry, values.get(id));
     const next = applyUpdate(previous, update, gsn, hlc, RESIDENT_MAP_FIELDS);
 
     if (next === null) {
@@ -393,19 +527,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         if (update.method === "drop") bufferUpdate(orphans, { update, gsn, hlc, position });
         return;
       }
-      entities.delete(id);
-      componentVersions.delete(id);
-      storeRows.delete(id);
-      removeFromModel(previous.model, id);
+      removeRow(id);
       return;
     }
 
     // A write moves the row into the log's own materialized base: its values
     // are the replica's data now, so no lease expiry may take them away.
-    storeRows.delete(id);
-    entities.set(id, next);
-    if (previous !== null && previous.model !== next.model) removeFromModel(previous.model, id);
-    addToModel(next.model, id);
+    storeOwned.delete(id);
+    const component = updateComponent(update);
+    const versions =
+      component === null
+        ? versionsForRow(entry?.versions ?? {}, next)
+        : versionsForRow(entry?.versions ?? {}, next, new Set([component]));
+    setIndexedRow(id, next, versions);
   };
 
   /**
@@ -433,84 +567,16 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const replayOrphans = (id: string, baseGsn: number): void => {
     const pending = orphans.get(id);
     if (pending === undefined) return;
-    const base = entities.get(id);
-    if (base === undefined) return;
+    const base = baseStateOf(id)?.row ?? null;
+    if (base === null) return;
     orphans.delete(id);
 
     const survivors = pending
       .filter((orphan) => orphan.gsn > baseGsn)
       .sort((a, b) => a.gsn - b.gsn);
-    let row: Entity = base;
     for (const orphan of survivors) {
-      row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc, RESIDENT_MAP_FIELDS) ?? row;
+      applyBaseUpdate(orphan.update, orphan.gsn, orphan.hlc, orphan.position);
     }
-    if (row === base) return;
-
-    // Buffered writes are drops, which detach a field and never move a model.
-    entities.set(id, row);
-  };
-
-  /**
-   * Every derived index tracks the composed view, so they must be reconciled
-   * wherever that view changes — which is why `publish` is the one place a
-   * settled view reaches them.
-   */
-  const reconcileIndex = (previous: Snapshot, next: Snapshot): void => {
-    const before = previous.row ?? undefined;
-    const after = next.row ?? undefined;
-    reverseIndex = applyIndexDelta(reverseIndex, reverseIndexDelta(before, after));
-    forwardIndex = applyIndexDelta(forwardIndex, forwardIndexDelta(before, after));
-    const id = (after ?? before)?.id;
-    if (id === undefined) return;
-    const delta = componentSetDelta(id, previous.components, next.components);
-    if (delta !== null) componentIndex = applyComponentDelta(componentIndex, delta);
-  };
-
-  /** The base row with the overlay's optimistic writes folded on, if any. */
-  const compose = (id: string): { next: Entity | null; overlaid: boolean } => {
-    const writes = overlay.get(id) ?? [];
-    let next = entities.get(id) ?? null;
-    for (const write of writes) {
-      next = applyUpdate(next, write.update, 0, write.hlc, RESIDENT_MAP_FIELDS);
-    }
-    return { next, overlaid: writes.length > 0 };
-  };
-
-  /**
-   * Settle a composed view: cache it for overlaid ids, then move the derived
-   * indices with it. A published row is the row `get` and `iterate` answer
-   * with, and it carries a value for every component it knows.
-   */
-  const publish = (
-    id: string,
-    next: Entity | null,
-    overlaid: boolean,
-    previous: Snapshot,
-  ): Snapshot => {
-    if (overlaid) effective.set(id, next);
-    else effective.delete(id);
-    const settled: Snapshot = {
-      row: next,
-      components: next === null ? [] : presenceOfRow(next),
-    };
-    reconcileIndex(previous, settled);
-    return settled;
-  };
-
-  /** Publish one row's settled view: no journal entry, no notification. */
-  const publishRow = (id: string, previous: Snapshot): void => {
-    const { next, overlaid } = compose(id);
-    publish(id, next, overlaid, previous);
-  };
-
-  /**
-   * Settle the view after a residency move — an install or an expiry. Nothing
-   * here journals: keeping or dropping a value is not a content change, so a
-   * derived reader has nothing to re-run for (#936).
-   */
-  const refresh = (id: string, previous: Snapshot): void => {
-    publishRow(id, previous);
-    notify();
   };
 
   /**
@@ -518,21 +584,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    * iff a reader can see the difference. `previous` is the composed view
    * captured before the change, which is what makes an echo of an
    * already-visible optimistic write a no-op for the revision.
-   *
-   * A row arriving or leaving the set it is read from, or being filed under
-   * another model, is a membership change and stops there: its components are
-   * what it arrived or left carrying, not a value change a reader could already
-   * have seen. Everything else is a content change naming what it touched.
-   *
-   * Both sides are read from the same settled view — what `get` and `iterate`
-   * answer with — because that is the set a read draws from. Residency is a
-   * separate question: a row the policy retains no value of is still in the set,
-   * so a create that keeps nothing still enters it, and a write to it cannot
-   * make it leave.
    */
   const resync = (id: string, previous: Snapshot): void => {
-    const { next, overlaid } = compose(id);
-    publish(id, next, overlaid, previous);
+    deriveIndex(id);
     const view = viewOf(id);
     const before = sourceRow(previous.row);
     const after = sourceRow(view);
@@ -558,7 +612,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       previous.row,
       previous.components,
       view,
-      presenceOfView(id),
+      index.get(id)?.components ?? [],
     );
     if (contentChanged(previous.row, view) || touched.length > 0) {
       journalContent(id, view.deleted_hlc !== null, touched);
@@ -586,6 +640,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return affected;
   };
 
+  /**
+   * Fold the writes that waited behind a cold read, and settle them like any
+   * other write. Returns whether anything was replayed, so the caller can
+   * notify once for the batch.
+   */
+  const replayBufferedWrites = (id: string, pending?: Snapshot): boolean => {
+    const buffered = pendingWrites.get(id);
+    if (buffered === undefined) return false;
+    pendingWrites.delete(id);
+    const previous = pending ?? capture(id);
+    for (const entry of buffered)
+      applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
+    resync(id, previous);
+    return true;
+  };
+
   const ingest = (action: Action, delta: readonly Update[], position: number): Revision => {
     const before = new Map<string, Snapshot>();
     for (const update of delta) rememberView(before, update.subject_id);
@@ -597,7 +667,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // so a buffered later write is folded once the whole Action is in — not on
     // the first Update that makes the row exist, which would order it before
     // the components delivered with the create.
-    const awaitingOrphans = [...orphans.keys()].filter((id) => !entities.has(id));
+    const awaitingOrphans = [...orphans.keys()].filter((id) => index.get(id) === undefined);
 
     for (const update of delta) applyBaseUpdate(update, action.gsn, action.hlc, position);
     for (const id of awaitingOrphans) replayOrphans(id, action.gsn);
@@ -617,6 +687,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const id = update.subject_id;
       rememberView(before, id);
       touched.add(id);
+      if (!overlaidBase.has(id)) {
+        overlaidBase.set(id, baseStateOf(id) ?? { row: null, versions: {} });
+      }
       const write: OptimisticWrite = { actionId: action.id, update, hlc: action.hlc };
       const writes = overlay.get(id);
       if (writes === undefined) overlay.set(id, [write]);
@@ -635,24 +708,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return revision;
   };
 
-  /** Remove a row's base, overlay, and index traces without journaling. */
-  const removeRow = (id: string): void => {
-    const base = entities.get(id);
-    entities.delete(id);
-    componentVersions.delete(id);
-    storeRows.delete(id);
-    overlay.delete(id);
-    effective.delete(id);
-    orphans.delete(id);
-    cancelReadsFor(id);
-    if (base !== undefined) removeFromModel(base.model, id);
-  };
-
   /**
    * Eviction is a visible removal, so each dropped row journals one membership
    * change naming the model it was filed under — it leaves that set, and which
-   * components it carried is not what a reader matches on. Traces an id leaves
-   * in the overlay or orphan buffer have no row to journal, but go with it.
+   * components it carried is not what a reader matches on.
    */
   const evict = (ids: readonly string[]): Revision => {
     const seen = new Set<string>();
@@ -663,7 +722,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const previous = capture(id);
       removeRow(id);
       for (const component of previous.components) leases.forget({ entityId: id, component });
-      reconcileIndex(previous, { row: null, components: [] });
       if (previous.row === null) continue;
       removed = true;
       const filed = sourceRow(previous.row);
@@ -679,13 +737,14 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   const load = (record: ReplicaRecord): Revision => {
     if (!isValidReplicaRecord(record)) return revision;
-    entities.clear();
-    modelIndex.clear();
-    storeRows.clear();
-    componentVersions.clear();
+    index.clear();
+    values.clear();
+    entryRows.clear();
+    composedRows.clear();
+    storeOwned.clear();
     orphans.clear();
     overlay.clear();
-    effective.clear();
+    overlaidBase.clear();
     cancelAllReads();
     // A load replaces the in-memory view, so every claim on the old values goes
     // with it. A timer armed by the replaced table can still fire; `dropResidentValue`
@@ -696,40 +755,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     });
     journal.length = 0;
     journalStart = 0;
-    // One linear pass rebuilds the base, the adjacency index, and component
-    // existence; the derived indices are not persisted. Mutating the local row
-    // maps keeps the rebuild linear where folding `applyIndexDelta` per row
-    // would copy the whole key space each time.
-    const reverse: Record<string, Record<string, string>> = {};
-    const forward: Record<string, Record<string, string>> = {};
-    const add = (index: Record<string, Record<string, string>>, entry: IndexEntry): void => {
-      const rows = index[entry.key];
-      if (rows === undefined) index[entry.key] = { [entry.id]: entry.value };
-      else rows[entry.id] = entry.value;
-    };
-    const presence: { id: string; components: readonly string[] }[] = [];
     for (const entity of record.entities) {
       // The record is a snapshot of the materialized view, so its rows are
       // adopted whole and become the replica's own data again.
       const row = withAdoptedMapFields(entity);
-      entities.set(row.id, row);
-      addToModel(row.model, row.id);
-      const components = presenceOfRow(row);
-      const stamps = new Map<string, number>();
-      for (const component of components) {
-        stamps.set(
-          component,
-          record.componentVersions[row.id]?.[component] ?? declaredVersion(component),
-        );
+      const versions: Record<string, number> = {};
+      for (const component of componentsOfRow(row)) {
+        versions[component] =
+          record.componentVersions[row.id]?.[component] ?? declaredVersion(component);
       }
-      if (stamps.size > 0) componentVersions.set(row.id, stamps);
-      presence.push({ id: row.id, components });
-      for (const entry of indexEntriesFor(row)) add(reverse, entry);
-      for (const entry of forwardIndexEntriesFor(row)) add(forward, entry);
+      setIndexedRow(row.id, row, versions);
     }
-    componentIndex = buildComponentIndexFrom(presence);
-    reverseIndex = reverse;
-    forwardIndex = forward;
     // A load replaces the journal wholesale. When it advances the revision,
     // that jump is the signal; when it does not (a restore of the same
     // durable base), bump by one so derived readers still observe the swap.
@@ -749,20 +785,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // not advance past it or hydrate would replay the tail only after the base.
     const position =
       oldest === Number.POSITIVE_INFINITY ? lastPosition : Math.min(lastPosition, oldest - 1);
-    // A resident row persists whole: what a read installed is in memory the
-    // same way a folded value is, and a map field leaves as the flat wire
-    // shape. Durability is the store's; this is the fast path back to a view.
     const persisted: Entity[] = [];
     const versions: Record<string, Record<string, number>> = {};
-    for (const row of entities.values()) {
+    for (const entry of index.entries()) {
+      const base = overlaidBase.get(entry.id);
+      const row = base === undefined ? viewOf(entry.id) : base.row;
+      if (row === null) continue;
       persisted.push(withWireMapFields(row));
-      // A session-materialized component has no stamp; persist the declaration.
-      const stamps: Record<string, number> = {};
-      for (const component of presenceOfRow(row)) {
-        stamps[component] =
-          componentVersions.get(row.id)?.get(component) ?? declaredVersion(component);
+      const stamped = base === undefined ? entry.versions : base.versions;
+      const shape: Record<string, number> = {};
+      for (const component of componentsOfRow(row)) {
+        shape[component] = stamped[component] ?? declaredVersion(component);
       }
-      if (Object.keys(stamps).length > 0) versions[row.id] = stamps;
+      if (Object.keys(shape).length > 0) versions[row.id] = shape;
     }
     return {
       format: REPLICA_RECORD_FORMAT,
@@ -775,19 +810,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   const stats = (): ReplicaStats => {
     const byModel: Record<string, number> = {};
-    const ids = new Set<string>(entities.keys());
-    for (const [id, row] of effective) {
-      if (row !== null) ids.add(id);
-    }
     let total = 0;
     let components = 0;
-
-    for (const id of ids) {
-      const row = viewOf(id);
-      if (row === null) continue;
+    for (const entry of index.entries()) {
       total += 1;
-      byModel[row.model] = (byModel[row.model] ?? 0) + 1;
-      components += new Set(presenceOfRow(row)).size;
+      byModel[entry.model] = (byModel[entry.model] ?? 0) + 1;
+      components += entry.components.length;
     }
     return {
       entities: total,
@@ -802,44 +830,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     };
   };
 
-  /** A row's envelope: everything but its component values. */
-  const envelopeBytes = (row: Entity): number =>
-    jsonBytes({
-      id: row.id,
-      model: row.model,
-      exists: row.exists,
-      created_hlc: row.created_hlc,
-      updated_hlc: row.updated_hlc,
-      deleted_hlc: row.deleted_hlc,
-      last_gsn: row.last_gsn,
-    });
-
-  /** A row's values, `data` wrapper included, so `envelope + values` is its JSON minus 8. */
-  const valuesBytes = (row: Entity): number => jsonBytes(row.data);
-
-  /** An empty structure retains nothing, so it must not cost its JSON punctuation. */
-  const recordBytes = (shape: Readonly<Record<string, unknown>>): number =>
-    Object.keys(shape).length === 0 ? 0 : jsonBytes(shape);
-
-  const idIndexBytes = (index: ReadonlyMap<string, ReadonlySet<string>>): number => {
-    const shape: Record<string, readonly string[]> = {};
-    for (const [key, ids] of index) shape[key] = [...ids];
-    return recordBytes(shape);
-  };
-
-  const versionBytes = (): number => {
-    const shape: Record<string, Record<string, number>> = {};
-    for (const [id, stamps] of componentVersions) shape[id] = Object.fromEntries(stamps);
-    return recordBytes(shape);
-  };
-
-  const indexBytes = (): number =>
-    recordBytes(reverseIndex) +
-    recordBytes(forwardIndex) +
-    idIndexBytes(componentIndex) +
-    idIndexBytes(modelIndex) +
-    versionBytes();
-
   /**
    * The overlay's own writes, the composed views it caches, and the updates
    * waiting for a base row. All three exist only because a write is unconfirmed.
@@ -850,30 +840,51 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const orphanShape: Record<string, readonly OrphanUpdate[]> = {};
     for (const [id, updates] of orphans) orphanShape[id] = updates;
     let views = 0;
-    for (const row of effective.values()) {
+    for (const id of overlay.keys()) {
+      const row = viewOf(id);
       if (row === null) continue;
-      views += envelopeBytes(row) + valuesBytes(row);
+      views += jsonBytes(envelopeShape(row));
+      views += jsonBytes(row.data);
     }
     return recordBytes(overlayShape) + recordBytes(orphanShape) + views;
   };
 
+  /** Declared version stamps on the base entries, part of the index account. */
+  const versionBytes = (): number => {
+    const shape: Record<string, Readonly<Record<string, number>>> = {};
+    for (const entry of index.entries()) {
+      const base = overlaidBase.get(entry.id);
+      const stamped = base === undefined ? entry.versions : base.versions;
+      if (Object.keys(stamped).length > 0) shape[entry.id] = stamped;
+    }
+    return recordBytes(shape);
+  };
+
   const bytes = (): ReplicaBytes => {
     let rows = 0;
-    let values = 0;
-    for (const row of entities.values()) {
-      rows += envelopeBytes(row);
-      values += valuesBytes(row);
+    let valueBytes = 0;
+    for (const entry of index.entries()) {
+      const base = overlaidBase.get(entry.id);
+      const row = base === undefined ? viewOf(entry.id) : base.row;
+      if (row === null) continue;
+      const baseEntry = base === undefined ? entry : entryOf(row, base.versions);
+      rows += envelopeBytes(baseEntry);
+      valueBytes += jsonBytes(baseEntry.fields);
+      if (base === undefined) {
+        const extra = values.get(entry.id);
+        if (extra !== undefined) valueBytes += jsonBytes(extra);
+      }
     }
-    const index = indexBytes();
+    const indexBytes = index.bytes() + versionBytes();
     const journalBytes = journal.length === 0 ? 0 : jsonBytes(journal);
     const unconfirmedWrites = unconfirmedWriteBytes();
     return {
       rows,
-      values,
-      index,
+      values: valueBytes,
+      index: indexBytes,
       journal: journalBytes,
       unconfirmedWrites,
-      total: rows + values + index + journalBytes + unconfirmedWrites,
+      total: rows + valueBytes + indexBytes + journalBytes + unconfirmedWrites,
     };
   };
 
@@ -890,80 +901,99 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   /**
    * Drop a value whose claim went inactive for longer than the residency grace
    * period. Expiry is a residency event, not a content change: the value leaves
-   * the composed view and nothing journals (#936).
-   *
-   * Only a claim owns a value: a row the log folded is the replica's own data,
-   * and a lease that expired over it releases nothing. A row a read installed
-   * leaves whole, because every value it carries came from the same store copy,
-   * and it leaves only once no sibling is leased or still inside its own grace
-   * period: each value gets its one grace period, and the row goes with the
-   * last of them. An active lease is never expired (#933).
+   * the composed view and nothing journals (#936). Only a value a read
+   * installed may leave; a value the log folded is the replica's own data.
    */
   const dropResidentValue = (key: LeaseKey): void => {
     // A timer armed by a table a `load` has since replaced must not drop a value
     // the live table still claims.
     if (leases.isResident(key)) return;
     const id = key.entityId;
-    const base = entities.get(id);
-    if (base === undefined) return;
-    // A row the log folded has no lease to run out: it is the replica's own
-    // data, so it stays resident for the session. Reclaiming it needs a memory
-    // budget this replica does not have yet (#957).
-    if (!storeRows.has(id)) return;
-    // Components are read from the composed view: an overlay can carry one the
-    // base has never seen, and its claim is just as live.
-    const components = new Set(presenceOfRow(base));
-    const view = viewOf(id);
-    if (view !== null) {
-      for (const component of presenceOfRow(view)) components.add(component);
-    }
-    if (!components.has(key.component)) return;
-    const stillResident = [...components].some(
-      (component) => component !== key.component && leases.isResident({ entityId: id, component }),
-    );
-    if (stillResident) return;
-    const previous = capture(id);
-    removeRow(id);
-    for (const component of previous.components) leases.forget({ entityId: id, component });
-    refresh(id, previous);
+    const entry = index.get(id);
+    if (entry === undefined) return;
+    if (!storeOwned.get(id)?.has(key.component)) return;
+    // An overlaid row's base is held apart from the value cache; expiring it
+    // would need a base edit that the next derive turns back into an index
+    // change. Leave it resident until the overlay clears (#975 owns the rule).
+    if (overlaidBase.has(id)) return;
+    const field = componentField(key.component);
+    // A leaf is always resident in its entry, so no claim can take it away.
+    if (entry.fields[field] !== undefined) return;
+    const extra = values.get(id);
+    if (extra === undefined || extra[field] === undefined) return;
+
+    const { [field]: _dropped, ...remaining } = extra;
+    if (Object.keys(remaining).length === 0) values.delete(id);
+    else values.set(id, remaining);
+    composedRows.delete(id);
+    notify();
   };
 
   /** Read one component through the seam. */
   const readOne = async (id: string, component: string): Promise<Entity | null> =>
     options?.readComponent?.(id, component) ?? null;
 
+  /** Mark the values a store read installed as lease-owned, so they may expire. */
+  const ownFromStore = (id: string, components: readonly string[]): void => {
+    const owned = storeOwned.get(id);
+    if (owned === undefined) storeOwned.set(id, new Set(components));
+    else for (const component of components) owned.add(component);
+  };
+
   /**
    * Install a component read for `id`, then replay the writes that waited
-   * behind it. The install itself is residency: it is published, never
-   * journalled. The writes are content, and journal through the replay.
+   * behind it. A component the entry already names is a residency move: only
+   * its value lands in the cache and the index is untouched. A component the
+   * row does not know is a store install, which derives a whole entry.
    */
   const installComponent = (id: string, component: string, loaded: Entity): boolean => {
     const field = componentField(component);
     const adopted = withAdoptedMapFields(loaded);
     const value = adopted.data.fields[field];
     if (value === undefined) return false;
-    const previous = capture(id);
-    const base = entities.get(id) ?? null;
-    // The store hands over a whole row, and the replica keeps it whole: a
-    // value an older base row already carries is the replica's own data, so
-    // the base wins and the install only fills what it lacks.
-    const fields = { ...adopted.data.fields, ...base?.data.fields };
+
+    const entry = index.get(id);
+    if (entry !== undefined && entry.components.includes(component)) {
+      // A leaf or platform value is already in the entry; a map value is the
+      // only one a read can still install.
+      if (entry.fields[field] !== undefined) {
+        replayBufferedWrites(id);
+        return true;
+      }
+      const current = values.get(id) ?? {};
+      values.set(id, { ...current, [field]: value });
+      composedRows.delete(id);
+      ownFromStore(id, [component]);
+      replayBufferedWrites(id);
+      notify();
+      return true;
+    }
+
+    const base = baseStateOf(id);
+    const previous = base?.row ?? null;
+    // The store hands over a whole row; values the replica already holds are
+    // its own data, so the base wins and the install only fills what it lacks.
+    const fields = { ...adopted.data.fields, ...previous?.data.fields };
     const row: Entity = {
-      ...(base ?? loaded),
+      ...(previous ?? adopted),
       id,
-      model: loaded.model,
+      model: adopted.model,
       data: { fields },
-      exists: loaded.exists,
-      created_hlc: loaded.created_hlc,
-      updated_hlc: loaded.updated_hlc,
-      deleted_hlc: loaded.deleted_hlc,
-      last_gsn: Math.max(base?.last_gsn ?? 0, loaded.last_gsn),
+      exists: adopted.exists,
+      created_hlc: adopted.created_hlc,
+      updated_hlc: adopted.updated_hlc,
+      deleted_hlc: adopted.deleted_hlc,
+      last_gsn: Math.max(previous?.last_gsn ?? 0, adopted.last_gsn),
     };
-    entities.set(id, row);
-    addToModel(row.model, id);
-    if (base === null) storeRows.add(id);
-    publishRow(id, previous);
-    replayBufferedWrites(id, capture(id));
+    const versions = versionsForRow(base?.versions ?? {}, row);
+    if (overlaidBase.has(id)) {
+      overlaidBase.set(id, { row, versions });
+      deriveIndex(id);
+    } else {
+      setIndexedRow(id, row, versions);
+    }
+    ownFromStore(id, componentsOfRow(row));
+    replayBufferedWrites(id);
     notify();
     return true;
   };
@@ -1022,18 +1052,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
   };
 
-  /** Whether the replica holds a value for every component `row` carries. */
-  const fullyResident = (row: Entity): boolean =>
-    fieldComponentsOf(row).every((component) => isComponentResident(row.id, component));
-
   const isComponentResident = (id: string, component: string): boolean => {
     const row = viewOf(id);
     return row !== null && row.data.fields[componentField(component)] !== undefined;
   };
 
+  /** Whether the replica holds a value for every component `row` carries. */
+  const fullyResident = (row: Entity): boolean =>
+    Object.keys(row.data.fields)
+      .map((field) => fieldComponent(row.model, field))
+      .every((component) => isComponentResident(row.id, component));
+
   const residentComponents = (id: string): readonly string[] => {
     const row = viewOf(id);
-    return row === null ? [] : fieldComponentsOf(row);
+    return row === null
+      ? []
+      : Object.keys(row.data.fields).map((field) => fieldComponent(row.model, field));
   };
 
   const read = async (id: string, components: readonly string[]): Promise<Entity | null> => {
@@ -1100,7 +1134,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     ) {
       return declaredVersion(component);
     }
-    return componentVersions.get(id)?.get(component);
+    return index.get(id)?.versions[component];
   };
 
   return {
@@ -1111,7 +1145,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       return changeFloor;
     },
     get,
-    base: (id) => entities.get(id),
+    base: (id) => {
+      const base = overlaidBase.get(id);
+      return base === undefined ? (viewOf(id) ?? undefined) : (base.row ?? undefined);
+    },
     iterate,
     fullyResident,
     read,
@@ -1124,29 +1161,24 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     bytes,
     relationships: (query: RelationshipQuery): readonly string[] => {
       if (query.sourceId !== undefined) {
-        const row = get(query.sourceId);
-        // A tombstoned row keeps its fields, so it is asked separately whether
-        // it is still a live source of anything.
-        if (row === undefined || row.deleted_hlc !== null) return [];
-        return linkTargets(row, query.as, query.type);
+        return index.edgeTargets(query.as, query.type, query.sourceId);
       }
       if (query.targetId !== undefined) {
-        return liveSourceIds(reverseIndex[reverseIndexKey(query.as, query.type, query.targetId)]);
+        return index.edgeSources(query.as, query.type, query.targetId);
       }
       return [];
     },
-    components: (component) => componentIds(componentIndex, component),
+    components: (component) => index.idsWithComponent(component),
     memberships: (query: MembershipQuery): readonly string[] => {
-      if (query.groupId !== undefined) {
-        return liveSourceIds(reverseIndex[membershipIndexKey(query.groupId)]);
-      }
-      if (query.entityId !== undefined) {
-        return liveSourceIds(forwardIndex[forwardMembershipIndexKey(query.entityId)]);
-      }
+      if (query.groupId !== undefined) return index.groupMembers(query.groupId);
+      if (query.entityId !== undefined) return index.entityGroups(query.entityId);
       return [];
     },
     membershipLinks: (entityId: string): readonly MembershipLink[] =>
-      liveMembershipLinks(forwardIndex[forwardMembershipIndexKey(entityId)]),
+      index.membershipRows(entityId).map(({ membershipId, groupId }) => ({
+        membershipId,
+        groupId,
+      })),
     ingest,
     optimistic,
     discard,

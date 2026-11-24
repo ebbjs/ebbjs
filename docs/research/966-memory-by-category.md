@@ -39,14 +39,14 @@ and `933-*`/`957` history for residency.
 
 `Replica.bytes()` returns `ReplicaBytes`:
 
-| category            | what it counts                                                                                                              |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `rows`              | The row envelope: `id`, `model`, `exists`, `created_hlc`, `updated_hlc`, `deleted_hlc`, `last_gsn`                          |
-| `values`            | Every component value in `data.fields` with its `update_id`/`hlc` envelope, plus the `data` wrapper                         |
-| `index`             | Model index, component-existence index, reverse and forward adjacency indices, and the declared-version stamp per component |
-| `journal`           | The retained change-journal array, including a discarded prefix a trim has not compacted yet                                |
-| `unconfirmedWrites` | The optimistic overlay writes, the composed `effective` views they cache, and orphan updates waiting for a base row         |
-| `total`             | The categories above, summed                                                                                                |
+| category            | what it counts                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `rows`              | The row envelope: `id`, `model`, `exists`, `created_hlc`, `updated_hlc`, `deleted_hlc`, `last_gsn`                  |
+| `values`            | Each entry's always-resident fields plus the separate value cache, with their `update_id`/`hlc` envelope            |
+| `index`             | Model, component-existence, edge and membership maps, and the declared-version stamp per component                  |
+| `journal`           | The retained change-journal array, including a discarded prefix a trim has not compacted yet                        |
+| `unconfirmedWrites` | The optimistic overlay writes, the composed `effective` views they cache, and orphan updates waiting for a base row |
+| `total`             | The categories above, summed                                                                                        |
 
 The `unconfirmedWrites` figure counts the overlay, the composed views it caches, and orphan
 updates waiting for a base row. A server-confirmed Update buffered behind a cold read is not
@@ -54,11 +54,13 @@ counted: it belongs to the base's next settle, not to the overlay.
 
 The unit is UTF-8 bytes of JSON, counted without `Buffer` or `TextEncoder` so Node, a browser,
 and React Native agree; `jsonBytes` is exported beside the replica so a harness does not carry a
-second implementation. `rows + values` is each row's JSON less the 8-byte `,"data":` separator
-the two share; the benchmark asserts that identity. The account is a separate method rather than
-a `stats()` field because it serializes every retained structure; it is diagnostic, not a read
-path. Residency bookkeeping — the lease table, the `storeRows` set, reads in flight — is not a
-category: it holds no row or value.
+second implementation. `rows + values` is each entry's envelope plus its fields; the
+`,"data":{"fields":` wrapper they share is outside both. #971 replaced the `storeRows` set with the
+store-owned values the value cache tracks and keeps version stamps in the index account. The
+benchmark asserts the current split. The account is a separate method
+rather than a `stats()` field because it serializes every retained structure; it is diagnostic,
+not a read path. Residency bookkeeping — the lease table, store-owned values, reads in flight — is
+not a category: it holds no row or value.
 
 Two categories live outside the replica, so the benchmark measures them on the same throwaway
 replica:
