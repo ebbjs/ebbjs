@@ -113,7 +113,13 @@ describe("row index: lookups", () => {
     expect(index.edgeTargets("author", "wrote", "src_2")).toEqual(["tgt_1", "tgt_2"]);
     expect(index.groupMembers("grp_1")).toEqual(["e_1", "e_2"]);
     expect(index.entityGroups("e_1")).toEqual(["grp_1"]);
-    expect(index.membershipRows("e_1")).toEqual([{ membershipId: "m_2", groupId: "grp_1" }]);
+    expect(index.membershipRows("e_1")).toEqual([
+      { membershipId: "m_2", groupId: "grp_1", entityId: "e_1" },
+    ]);
+    expect(index.membershipRows()).toEqual([
+      { membershipId: "m_1", groupId: "grp_1", entityId: "e_2" },
+      { membershipId: "m_2", groupId: "grp_1", entityId: "e_1" },
+    ]);
     expect(index.entries().map((entry) => entry.id)).toEqual(["m_1", "m_2", "src_1", "src_2"]);
   });
 
@@ -132,9 +138,27 @@ describe("row index: lookups", () => {
     index.set(entryOf(row("m_a", "ebb", { membership: membership("grp_a", "e_1") })));
 
     expect(index.membershipRows("e_1")).toEqual([
-      { membershipId: "m_a", groupId: "grp_a" },
-      { membershipId: "m_b", groupId: "grp_b" },
+      { membershipId: "m_a", groupId: "grp_a", entityId: "e_1" },
+      { membershipId: "m_b", groupId: "grp_b", entityId: "e_1" },
     ]);
+  });
+
+  it("answers every live membership row, across groups and entities", () => {
+    const index = createRowIndex();
+    index.set(entryOf(row("m_2", "ebb", { membership: membership("grp_1", "e_1") })));
+    index.set(entryOf(row("m_1", "ebb", { membership: membership("grp_2", "e_2") })));
+    index.set(entryOf(row("e_1", "todo", { title: leaf("One") })));
+    index.set(
+      entryOf(
+        row("m_3", "ebb", { membership: membership("grp_2", "e_1") }, { deleted_hlc: makeHlc(9) }),
+      ),
+    );
+
+    expect(index.membershipRows()).toEqual([
+      { membershipId: "m_2", groupId: "grp_1", entityId: "e_1" },
+      { membershipId: "m_1", groupId: "grp_2", entityId: "e_2" },
+    ]);
+    expect(index.membershipRows("e_missing")).toEqual([]);
   });
 });
 

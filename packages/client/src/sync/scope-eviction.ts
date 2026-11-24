@@ -7,39 +7,39 @@
  * stays while any one of them is subscribed. A row with no membership at
  * all is not attributable to a group, so it is never evicted here.
  *
- * The functions are pure over the replica's current rows. The caller applies
+ * Membership and the platform rows it names are read from the row index
+ * (#978), never from a component value, so removing a value cannot change
+ * which groups a row is in.
+ *
+ * The functions are pure over the replica's current index. The caller applies
  * the result with {@link Replica.evict} and owns the durable base.
  */
 
-import {
-  carriesComponent,
-  EBB_MODEL_NAME,
-  systemValueString,
-  type EbbComponentKind,
-  type Entity,
-} from "@ebbjs/core";
+import { systemValueString } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
-const addGroup = (map: Map<string, Set<string>>, entityId: string, groupId: string): void => {
-  const groups = map.get(entityId);
-  if (groups === undefined) map.set(entityId, new Set([groupId]));
-  else groups.add(groupId);
-};
+interface GrantRow {
+  readonly grantId: string;
+  readonly groupId: string;
+}
 
 /**
- * The replica's rows of one platform kind. A row's kind is the `ebb/*` component
- * it carries, not its model; a row carrying two lands in both buckets, which is
- * what an overlay row (#820) needs.
+ * The replica's grant rows with their group. The grant's `ebb/grant` value is
+ * an index field, so the answer cannot change while the row is resident.
  */
-const platformRows = (replica: Replica, kind: EbbComponentKind): readonly Entity[] =>
-  replica.iterate(EBB_MODEL_NAME).filter((row) => carriesComponent(row, kind));
+const grantRows = (replica: Replica): readonly GrantRow[] =>
+  replica.components("ebb/grant").flatMap((grantId) => {
+    const groupId = systemValueString(replica.get(grantId), "grant", "group_id");
+    return groupId === null ? [] : [{ grantId, groupId }];
+  });
 
 /**
  * The ids to evict so only `groupIds` remain resident. Group, grant, and
- * membership rows follow their own `group_id`; every other row follows its
- * live `ebb/membership` rows. An edge needs no rule of its own: it is a keyed
- * component of its source, so evicting the source takes it along (#820).
+ * membership rows follow their own `group_id`; every other row follows the
+ * live membership rows the index files under it. An edge needs no rule of its
+ * own: it is a keyed component of its source, so evicting the source takes it
+ * along (#820).
  */
 export const evictableRowIds = (
   replica: Replica,
@@ -47,34 +47,25 @@ export const evictableRowIds = (
 ): readonly string[] => {
   const subscribed = new Set(groupIds);
   const evicted = new Set<string>();
-  const memberGroups = new Map<string, Set<string>>();
+  const members = new Set<string>();
+  const subscribedMembers = new Set<string>();
 
-  const memberships = platformRows(replica, "membership");
-  for (const row of memberships) {
-    const entityId = systemValueString(row, "membership", "entity_id");
-    const groupId = systemValueString(row, "membership", "group_id");
-    if (entityId !== null && groupId !== null) addGroup(memberGroups, entityId, groupId);
-    if (groupId !== null && !subscribed.has(groupId)) evicted.add(row.id);
+  for (const membership of replica.membershipRows()) {
+    members.add(membership.entityId);
+    if (subscribed.has(membership.groupId)) subscribedMembers.add(membership.entityId);
+    else evicted.add(membership.membershipId);
+  }
+  for (const entityId of members) {
+    if (!subscribedMembers.has(entityId)) evicted.add(entityId);
   }
 
-  for (const row of platformRows(replica, "group")) {
-    if (!subscribed.has(row.id)) evicted.add(row.id);
+  // A group's scope is itself, so a group row's id is the group id.
+  for (const groupId of replica.components("ebb/group")) {
+    if (!subscribed.has(groupId)) evicted.add(groupId);
   }
 
-  for (const row of platformRows(replica, "grant")) {
-    const groupId = systemValueString(row, "grant", "group_id");
-    if (groupId !== null && !subscribed.has(groupId)) evicted.add(row.id);
-  }
-
-  // Every other model's rows follow their memberships. `ebb` was bucketed by
-  // component above; an overlay row is committed under its host model.
-  for (const type of Object.keys(replica.stats().byModel)) {
-    if (type === EBB_MODEL_NAME) continue;
-    for (const row of replica.iterate(type)) {
-      const groups = memberGroups.get(row.id);
-      if (groups === undefined) continue;
-      if (![...groups].some((groupId) => subscribed.has(groupId))) evicted.add(row.id);
-    }
+  for (const { grantId, groupId } of grantRows(replica)) {
+    if (!subscribed.has(groupId)) evicted.add(grantId);
   }
 
   return [...evicted];
@@ -90,20 +81,12 @@ export const scopeEvictedGroupIds = (
   groupIds: readonly string[],
 ): readonly string[] => {
   const subscribed = new Set(groupIds);
-  const evicted = new Set<string>();
-  const collect = (groupId: string | null): void => {
-    if (groupId !== null && !subscribed.has(groupId)) evicted.add(groupId);
-  };
-  for (const row of replica.iterate(EBB_MODEL_NAME)) {
-    if (carriesComponent(row, "group")) {
-      collect(row.id);
-      continue;
-    }
-    for (const kind of ["membership", "grant"] as const) {
-      if (carriesComponent(row, kind)) collect(systemValueString(row, kind, "group_id"));
-    }
-  }
-  return [...evicted];
+  const present = new Set<string>([
+    ...replica.components("ebb/group"),
+    ...replica.membershipRows().map((membership) => membership.groupId),
+    ...grantRows(replica).map((grant) => grant.groupId),
+  ]);
+  return [...present].filter((groupId) => !subscribed.has(groupId)).sort();
 };
 
 /** Fold `extra`'s rows into `base` by id, `base` winning an overlap. */

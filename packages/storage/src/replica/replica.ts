@@ -1137,6 +1137,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (query.entityId !== undefined) return index.entityGroups(query.entityId);
       return [];
     },
+    membershipRows: (entityId?: string) => index.membershipRows(entityId),
     membershipLinks: (entityId: string): readonly MembershipLink[] =>
       index.membershipRows(entityId).map(({ membershipId, groupId }) => ({
         membershipId,

@@ -76,10 +76,11 @@ export const entryOf = (row: Entity, versions: Readonly<Record<string, number>> 
   };
 };
 
-/** One membership row as the entity-keyed read yields it. */
+/** One live membership row: the pair it files and the row that files it. */
 export interface MembershipRow {
   readonly membershipId: string;
   readonly groupId: string;
+  readonly entityId: string;
 }
 
 /**
@@ -100,8 +101,11 @@ export interface RowIndex {
   groupMembers(groupId: string): readonly string[];
   /** Distinct live group ids of an entity, ascending. */
   entityGroups(entityId: string): readonly string[];
-  /** Live membership rows of an entity, ascending by group then row id. */
-  membershipRows(entityId: string): readonly MembershipRow[];
+  /**
+   * Live membership rows, ascending by group then row id; `entityId` narrows
+   * the answer to one entity's.
+   */
+  membershipRows(entityId?: string): readonly MembershipRow[];
   /** Diff `entry` against its previous version and update every lookup. */
   set(entry: RowEntry): void;
   remove(id: string): void;
@@ -116,6 +120,11 @@ const edgeKey = (as: string, type: string, targetId: string): string =>
   `${as}${NUL}${type}${NUL}${targetId}`;
 
 const ascending = (values: Iterable<string>): string[] => [...values].sort();
+
+const byGroupThenRow = (a: MembershipRow, b: MembershipRow): number =>
+  a.groupId === b.groupId
+    ? a.membershipId.localeCompare(b.membershipId)
+    : a.groupId.localeCompare(b.groupId);
 
 /** The entry-keyed maps one direction owns, mutated in place. */
 type Rows = Map<string, Map<string, string>>;
@@ -205,14 +214,20 @@ export const createRowIndex = (): RowIndex => {
     },
     groupMembers: (groupId) => distinctValues(groups.get(groupId)),
     entityGroups: (entityId) => distinctValues(entityGroups.get(entityId)),
-    membershipRows: (entityId) =>
-      [...(entityGroups.get(entityId) ?? new Map())]
-        .map(([membershipId, groupId]) => ({ membershipId, groupId }))
-        .sort((a, b) =>
-          a.groupId === b.groupId
-            ? a.membershipId.localeCompare(b.membershipId)
-            : a.groupId.localeCompare(b.groupId),
-        ),
+    membershipRows: (entityId) => {
+      if (entityId !== undefined) {
+        return [...(entityGroups.get(entityId) ?? new Map())]
+          .map(([membershipId, groupId]) => ({ membershipId, groupId, entityId }))
+          .sort(byGroupThenRow);
+      }
+      const rows: MembershipRow[] = [];
+      for (const [groupId, members] of groups) {
+        for (const [membershipId, memberId] of members) {
+          rows.push({ membershipId, groupId, entityId: memberId });
+        }
+      }
+      return rows.sort(byGroupThenRow);
+    },
     set: (entry) => {
       const previous = entries.get(entry.id);
       if (previous !== undefined) withdraw(previous);
