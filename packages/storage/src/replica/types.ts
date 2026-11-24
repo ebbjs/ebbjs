@@ -1,6 +1,7 @@
 import type { Action, Entity, Update } from "@ebbjs/core";
 
 import type { LeaseStats, Release } from "./leases";
+import type { MembershipRow } from "./row-index";
 import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
@@ -300,6 +301,12 @@ export interface Replica {
   memberships(query: MembershipQuery): readonly string[];
   /** Live member-keyed membership rows of an entity, ascending by group then row id. */
   membershipLinks(entityId: string): readonly MembershipLink[];
+  /**
+   * Every live membership row in the row index, ascending by group then row
+   * id. The subscription scope reads this: membership is an index answer, so
+   * a value leaving the cache cannot change which group a row is in.
+   */
+  membershipRows(): readonly MembershipRow[];
 
   /** Fold one durable Action's `delta` at its log position. */
   ingest(action: Action, delta: readonly Update[], position: number): Revision;

@@ -277,6 +277,11 @@ describe("replica adjacency: membership reads", () => {
     expect(replica.memberships({ groupId: "grp_1" })).toEqual(["e_1", "e_2"]);
     expect(replica.memberships({ entityId: "e_1" })).toEqual(["grp_1", "grp_2"]);
     expect(replica.memberships({})).toEqual([]);
+    expect(replica.membershipRows()).toEqual([
+      { membershipId: "m_2", groupId: "grp_1", entityId: "e_1" },
+      { membershipId: "m_3", groupId: "grp_1", entityId: "e_2" },
+      { membershipId: "m_1", groupId: "grp_2", entityId: "e_1" },
+    ]);
   });
 
   it("prefers groupId over entityId when both are set", () => {
@@ -306,6 +311,7 @@ describe("replica adjacency: membership reads", () => {
     expect(replica.memberships({ groupId: "grp_1" })).toEqual([]);
     expect(replica.memberships({ entityId: "e_1" })).toEqual([]);
     expect(replica.membershipLinks("e_1")).toEqual([]);
+    expect(replica.membershipRows()).toEqual([]);
   });
 });
 
