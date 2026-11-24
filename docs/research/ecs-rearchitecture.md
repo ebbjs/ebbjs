@@ -338,7 +338,7 @@ component merges by LWW or by existence is declared on the component.
 
 **(d) Type-granular invalidation.** `ReplicaChange` is
 `{revision, id, type, deleted}` (`packages/storage/src/replica/types.ts:17`), and
-`QueryCache` invalidates an entry when a change's `type` intersects the plan's
+`QueryResults` invalidates an entry when a change's `type` intersects the plan's
 `readTypes` (`query-plan.ts:84`). So a change to one field of one `issue` row
 invalidates every cached query over `issue`. This is deliberate — the code calls
 it "coarse-first" — and it is the correct first cut. It is also exactly what
@@ -670,7 +670,7 @@ happens.
 
 1. **Component-granular change journal.** `ReplicaChange` gains
    `components: readonly string[]`; the plan's `readTypes` gains
-   `readComponents`; `QueryCache` intersects on components. No wire change, no
+   `readComponents`; `QueryResults` intersects on components. No wire change, no
    storage change, no schema change. Ship it for invalidation precision and
    measure it against `#503`'s numbers.
 2. **Component namespace on the wire.** `subject_type` → `component`, with the

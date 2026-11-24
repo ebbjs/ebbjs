@@ -30,12 +30,12 @@ export interface UseQueryResult<
   TRow extends ProjectedRow<TFields> = ProjectedRow<TFields>,
 > {
   /**
-   * The cached rows, joined as selected. `undefined` while the query is
+   * The retained rows, joined as selected. `undefined` while the query is
    * `unloaded`, so a first mount never renders "no result yet" as an empty
    * list; use {@link status} to distinguish the two.
    */
   readonly data: QueryRows<TFields, TJoined, TRow> | undefined;
-  /** `unloaded` / `stale` / `current` / `failed`, from the engine cache. */
+  /** `unloaded` / `stale` / `current` / `failed`, from the results view. */
   readonly status: QueryStatus;
   /**
    * True only while no result exists yet (`unloaded`). Derived from
@@ -47,7 +47,7 @@ export interface UseQueryResult<
 }
 
 /**
- * The engine behind both query hooks: subscribe to the cached result `build`
+ * The engine behind both query hooks: subscribe to the retained result `build`
  * lowers to, against `root`.
  */
 export function useQueryRoot<
@@ -77,7 +77,7 @@ export function useQueryRoot<
 }
 
 /**
- * Subscribe a component to the engine's cached query result.
+ * Subscribe a component to the engine's retained query result.
  *
  * `build` receives `q` — the client narrowed to each namespace's `query()` —
  * so `q.todo.query` is `client.todo.query`. Annotate `q` with the schema
@@ -93,7 +93,7 @@ export function useQueryRoot<
  * succeeds, and `unloaded` is never rendered as an empty list.
  *
  * The subscription is the component's, for as long as it is mounted: the
- * cached result claims the components it reads, unmounting releases every one
+ * retained result claims the components it reads, unmounting releases every one
  * and starts the one residency TTL, and a remount inside that TTL reads neither
  * the store nor the replica. `useSyncExternalStore` is the whole ownership
  * path, so React's double-invoked effects, an abandoned concurrent render, and

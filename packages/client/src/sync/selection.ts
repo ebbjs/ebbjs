@@ -10,7 +10,7 @@
  * The selection is carried on the {@link Query} value (as
  * {@link QuerySelection}) so the query that produced a result also says what
  * must change to invalidate it, and two selections of one query stay distinct
- * cache entries.
+ * result entries.
  */
 
 import { EBB_COMPONENTS } from "@ebbjs/core";
@@ -141,7 +141,7 @@ export interface StructuralReads {
 /**
  * The structural dependencies of a read. A create or delete names no component,
  * so the source model's row set is a dependency in its own right. This is the
- * `sources` set the query cache registers; {@link StructuralReads} names the
+ * `sources` set the results view registers; {@link StructuralReads} names the
  * index reads #961 adds back.
  */
 export const structuralReads = (query: Query): StructuralReads => {
@@ -191,17 +191,17 @@ const encode = (value: unknown): string => {
   return `x:${String(value)}`;
 };
 
-/** The selection's contribution to the cache key: absent, empty, and named differ. */
+/** The selection's contribution to the result key: absent, empty, and named differ. */
 const selectionKey = (selection: QuerySelection | undefined): string =>
   selection === undefined
     ? "none"
     : `sel:${encode(selection.fields)}:${encode(selection.components)}`;
 
 /**
- * The cache key: surface plus the canonical lowered query, with the selection
+ * The result key: surface plus the canonical lowered query, with the selection
  * appended so two projections of one query never share an entry.
  */
-export const queryCacheKey = (surface: string, query: Query): string => {
+export const queryResultKey = (surface: string, query: Query): string => {
   const { selected: _selected, ...rest } = query;
   return keyOf(surface, encode(rest), selectionKey(query.selected));
 };

@@ -8,7 +8,7 @@
  *   type (schema and action map together)
  * - `useConnection` — `useSyncExternalStore` over connection state
  * - `useQuery` — the reactive read root: build a query through the typed
- *   entity namespaces and subscribe to its cached result
+ *   entity namespaces and subscribe to its retained result
  * - `usePresence` — the peers observed on one presence channel of one entity,
  *   typed from the channel's declared schema
  * - `useOutbox` / `useConflicts` / `useEbbStatus` — read-only subscriptions to

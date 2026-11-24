@@ -11,7 +11,7 @@ that moves with the fixture. Harness:
 **Sources read.** #966; #965 (the "In memory" list and the rules); the shipped seams
 `packages/storage/src/replica/{replica,types,leases,size}.ts`,
 `packages/storage/src/internal/{reverse-index,component-index,materialize}.ts`,
-`packages/client/src/sync/{query-cache,subscriptions}.ts`; the previous measurement note
+`packages/client/src/sync/{query-results,subscriptions}.ts`; the previous measurement note
 [`503-replica-read-model.md`](503-replica-read-model.md); `docs/research/534-claim-order-release.md`
 and `933-*`/`957` history for residency.
 

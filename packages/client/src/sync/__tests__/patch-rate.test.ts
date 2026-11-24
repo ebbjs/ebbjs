@@ -2,7 +2,7 @@
  * The shipped patch rate (#942) through the real `client.<model>.query()` path.
  *
  * The benchmark's patch table drives a local source, so its `patches/change`
- * describes the cache's dispatcher, not the projection a real query runs. A
+ * describes the results view's dispatcher, not the projection a real query runs. A
  * real unselected read expands `<model>/*` to every registered component, and
  * the patch declines a row it cannot prove is resident: a projected component
  * the row does not carry turns every projected write on that row into a re-run.

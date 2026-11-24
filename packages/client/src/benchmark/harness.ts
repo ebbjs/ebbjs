@@ -15,7 +15,7 @@ import type { Entity } from "@ebbjs/core";
 import { jsonBytes, type Replica } from "@ebbjs/storage/replica";
 
 import type { Query } from "../sync/query";
-import { createQueryCache, type QuerySource } from "../sync/query-cache";
+import { createQueryResults, type QuerySource } from "../sync/query-results";
 import type { AdjacencyReader } from "../sync/relationship";
 import { createSubscriptionRegistry } from "../sync/subscriptions";
 import { traversalCounter } from "../sync/traversal-counter";
@@ -282,9 +282,9 @@ export const measureInactiveResult = <T>(
   execute: () => readonly T[],
 ): InactiveResultMeasurement => {
   const registry = createSubscriptionRegistry(replica, { residencyTtlMs: 0, watchdog: false });
-  const cache = createQueryCache(replica, registry);
+  const results = createQueryResults(replica, registry);
   const source: QuerySource<T> = { ready: (): void => {}, isReady: (): boolean => true, execute };
-  const result = cache.watch("rows", query, source);
+  const result = results.watch("rows", query, source);
   const detach = result.subscribe(() => {
     /* the result is read back through the registry below */
   });

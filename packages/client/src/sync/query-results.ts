@@ -1,11 +1,12 @@
 /**
- * Reactive query results (#512), a view over the subscription registry (#941).
+ * Reactive query results (#512): the results view over the subscription
+ * registry (#941).
  *
- * A result is not cached here. The registry holds one entry per lowered
- * {@link Query} and surface, and that entry is the result: its snapshot, its
- * revision cursor, and the leases its dependencies need. This module only
- * drives one — it runs the source, derives the result status, and tells the
- * registry what to hold — so the lifetime question has one answer.
+ * A result lives on its registry entry, not here. The registry holds one entry
+ * per lowered {@link Query} and surface, and that entry is the result: its
+ * snapshot, its revision, and the leases its dependencies need. This module
+ * only drives one — it runs the source, derives the result status, and tells
+ * the registry what to hold — so the lifetime question has one answer.
  *
  * While a subscriber is attached the entry is live: the registry dispatches the
  * changes that touch its reads, and the entry claims the components its result
@@ -53,7 +54,7 @@ import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 import type { Query } from "./query";
 import { patchResultRows, patchShapeOf, type PatchShape } from "./query-execute";
 import { compileReadComponents, planQuery, type CompiledReadComponents } from "./query-plan";
-import { queryCacheKey, selectionReadComponents, structuralReads } from "./selection";
+import { queryResultKey, selectionReadComponents, structuralReads } from "./selection";
 import {
   createSubscriptionRegistry,
   patchableRows,
@@ -119,7 +120,7 @@ export interface QuerySource<T> {
    * source cannot reproduce the run for those rows. Absent means every change
    * re-runs.
    *
-   * The cache calls it only for a shape a patch may rewrite (no order, no
+   * The results view calls it only for a shape a patch may rewrite (no order, no
    * limit, no join) and an unsafe batch never reaches it, so an implementation
    * may assume the rows' place in the result is unchanged. It must answer one
    * row per id it was handed — the same ids, no duplicates and no others — or
@@ -130,7 +131,7 @@ export interface QuerySource<T> {
   patch?(ids: readonly string[]): readonly T[] | null;
 }
 
-export interface QueryCache {
+export interface QueryResults {
   /**
    * Read or start the result for `query` on `surface`. Two chains that lower to
    * the same query and surface share one registry entry and one result.
@@ -139,10 +140,10 @@ export interface QueryCache {
 }
 
 /**
- * What the cache keeps on its registry entry: how to run the source, how far
- * the result is current, and who is listening. The result itself and the claims
- * it owns live on the entry, not here — this is a consumer's controls, not a
- * second copy of the data.
+ * What the results view keeps on its registry entry: how to run the source,
+ * what a change may rewrite, and who is listening. The result, the revision it
+ * reflects, and the claims it owns live on the entry, not here — this is a
+ * consumer's controls, not a second copy of the data.
  */
 interface QueryRun<T> {
   readonly surface: QuerySurface;
@@ -155,11 +156,6 @@ interface QueryRun<T> {
   readonly source: QuerySource<T>;
   /** Each listener, whether it wants the first run, and the revision it joined at. */
   readonly listeners: Map<() => void, { initial: boolean; revision: Revision }>;
-  /**
-   * The revision the published result reflects. Irrelevant changes fold into it
-   * so a result that nothing touched stays `current` without a re-run.
-   */
-  at: Revision | null;
   running: boolean;
   /** Whether the entry's change listener is attached; it is attached once. */
   attached: boolean;
@@ -224,14 +220,14 @@ const healClaims = (
 };
 
 /**
- * Build the cache over a live replica and the registry its results live in.
- * Without a registry one is built over the replica; the inactive lifetime is
- * the registry's, so the cache takes no lifetime option of its own.
+ * Build the results view over a live replica and the registry its results live
+ * in. Without a registry one is built over the replica; the inactive lifetime
+ * is the registry's, so the store takes no lifetime option of its own.
  */
-export const createQueryCache = (
+export const createQueryResults = (
   replica: Replica,
   subscriptions: SubscriptionRegistry = createSubscriptionRegistry(replica),
-): QueryCache => {
+): QueryResults => {
   const isRelevant = <T>(run: QueryRun<T>, from: Revision): boolean => {
     if (replica.revision === from) return false;
     const changes = replica.changesSince(from);
@@ -241,10 +237,15 @@ export const createQueryCache = (
     return changes.length === 0 || changes.some((change) => touchesReadSet(run.reads, change));
   };
 
-  const statusOf = <T>(run: QueryRun<T>, result: QueryResult<T>): QueryStatus => {
+  const statusOf = <T>(
+    writer: SubscriptionWriter<QueryResult<T>>,
+    result: QueryResult<T>,
+  ): QueryStatus => {
     if (result.error !== null) return "failed";
     if (result.data === undefined) return "unloaded";
-    return run.at === replica.revision ? "current" : "stale";
+    // The entry is the one place the revision the result reflects lives, so the
+    // status is read from it rather than from a copy kept beside the source.
+    return writer.reflected === replica.revision ? "current" : "stale";
   };
 
   /**
@@ -252,9 +253,9 @@ export const createQueryCache = (
    * `useSyncExternalStore` reads a stable reference between result changes.
    * The entry is the one place the snapshot lives; nothing copies it.
    */
-  const refresh = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
+  const refresh = <T>(writer: SubscriptionWriter<QueryResult<T>>): void => {
     const current = resultOf(writer);
-    const status = statusOf(run, current);
+    const status = statusOf(writer, current);
     const error = status === "failed" ? current.error : null;
     const loading = status === "unloaded";
     if (current.status === status && current.loading === loading && current.error === error) return;
@@ -312,13 +313,6 @@ export const createQueryCache = (
     return claimsFor(run, ids);
   };
 
-  /** Point the entry at the revision the result reflects and the claims it needs. */
-  const sync = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
-    if (run.at === null) return;
-    writer.seek(run.at);
-    writer.depend(dependenciesOf(run, resultOf(writer)));
-  };
-
   const notifyAll = <T>(run: QueryRun<T>): void => {
     // Snapshot so a listener that unsubscribes mid-fan-out cannot skip a peer.
     for (const listener of Array.from(run.listeners.keys())) listener();
@@ -365,13 +359,12 @@ export const createQueryCache = (
     const hadError = before.error !== null;
     const startedStale = before.status === "stale";
     let publishedStale = false;
-    // The registry dispatches the batch through this entry, so the cursor is
-    // already at the batch revision. The visible result is still the one
-    // produced at `run.at`, and holding that lag keeps the status `stale` until
-    // `settle` advances the cursor to the revision it produced.
-    if (run.at !== null) writer.seek(run.at);
+    // The registry has handed this entry the batch's revision, but the visible
+    // result is still the one the entry holds. Holding that revision back keeps
+    // the status `stale` until `settle` advances it to the one it produced.
+    writer.hold();
     run.running = true;
-    refresh(writer, run);
+    refresh(writer);
 
     const settle = (data: readonly T[]): void => {
       run.running = false;
@@ -387,9 +380,9 @@ export const createQueryCache = (
           error: null,
         });
       }
-      run.at = revision;
-      sync(writer, run);
-      refresh(writer, run);
+      writer.seek(revision);
+      writer.depend(dependenciesOf(run, resultOf(writer)));
+      refresh(writer);
       // A view that saw `stale` must see the settle even when the rows are
       // equal, or it would stay stale.
       if (!hadData) notifyInitial(writer, run);
@@ -411,7 +404,7 @@ export const createQueryCache = (
         loading: current.loading,
         error,
       });
-      refresh(writer, run);
+      refresh(writer);
       if (changed || startedStale || publishedStale) {
         if (hadData) notifyAll(run);
         else notifyInitial(writer, run);
@@ -460,7 +453,7 @@ export const createQueryCache = (
         loading: current.loading,
         error: toError(thrown),
       });
-      refresh(writer, run);
+      refresh(writer);
       notifyInitial(writer, run);
     };
     try {
@@ -484,7 +477,7 @@ export const createQueryCache = (
 
   /**
    * Apply a batch as a patch instead of a re-run (#942): re-project the rows
-   * the batch changed and splice them into the cached result. Returns false
+   * the batch changed and splice them into the retained result. Returns false
    * when the batch is not one a patch may apply, so the caller re-runs.
    *
    * A patch is the run it replaces. `patchShapeOf` has already ruled out an
@@ -537,13 +530,12 @@ export const createQueryCache = (
     // did not previously claim. Heal the claims of the rows the batch named and
     // leave the rest alone, so this stays O(changed rows) rather than the walk
     // a re-run would do.
-    run.at = revision;
     writer.seek(revision);
     writer.depend(healClaims(writer.dependencies, ids, claimsFor(run, ids)));
     if (next !== data) {
       writer.publish({ data: next, status: "current", loading: false, error: null });
     }
-    refresh(writer, run);
+    refresh(writer);
     if (next !== data || current.error !== null) notifyAll(run);
     // A change that landed while this batch was being applied was not
     // reconciled, so settle from the current revision before standing down.
@@ -560,7 +552,7 @@ export const createQueryCache = (
    * that could move matching, ordering, or the row set re-runs (#942).
    *
    * An inactive result is not refreshed in the background: a relevant change
-   * holds its cursor back so a remount sees `stale`, and the re-run happens
+   * holds its revision back so a remount sees `stale`, and the re-run happens
    * when someone is listening. Its TTL ends it otherwise.
    */
   const reconcile = <T>(
@@ -572,33 +564,33 @@ export const createQueryCache = (
   ): void => {
     if (run.running) {
       // The run in flight will settle against the current revision; until then
-      // the result reflects the revision it started from.
-      if (run.at !== null) writer.seek(run.at);
+      // the result reflects the revision the entry holds.
+      writer.hold();
       return;
     }
     const result = resultOf(writer);
     if (result.data === undefined) {
       if (run.listeners.size === 0) return;
-      if (result.error !== null && isRelevant(run, run.at ?? 0)) retry(writer, run);
+      if (result.error !== null && isRelevant(run, writer.reflected)) retry(writer, run);
       return;
     }
-    if (run.at === revision) return;
+    if (writer.reflected === revision) return;
     if (run.listeners.size === 0) {
-      if (run.at !== null) writer.seek(run.at);
-      refresh(writer, run);
+      // Nobody is listening, so hold the revision back and mark the result
+      // stale: a remount inside the TTL re-runs it once. Holding it cannot be
+      // skipped, because dispatch would otherwise advance it to the batch's.
+      writer.hold();
+      refresh(writer);
       return;
     }
-    if (run.at !== null && !isRelevant(run, run.at)) {
-      run.at = revision;
+    if (!isRelevant(run, writer.reflected)) {
+      // Nothing this result read changed, so it is valid at this revision
+      // without a re-run.
       writer.seek(revision);
-      refresh(writer, run);
+      refresh(writer);
       return;
     }
-    if (
-      run.at !== null &&
-      changes !== undefined &&
-      patch(writer, run, revision, changes, unloaded)
-    ) {
+    if (changes !== undefined && patch(writer, run, revision, changes, unloaded)) {
       return;
     }
     execute(writer, run, revision);
@@ -606,7 +598,7 @@ export const createQueryCache = (
 
   return {
     watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T> {
-      const key = queryCacheKey(surface, query);
+      const key = queryResultKey(surface, query);
       // A collection result keeps ids, a projected row keeps the whole shape;
       // only the latter needs the source and joined models read whole.
       const readNames =
@@ -621,7 +613,6 @@ export const createQueryCache = (
         patchShape: patchShapeOf(query),
         source,
         listeners: new Map(),
-        at: null,
         running: false,
         attached: false,
       });
@@ -659,15 +650,16 @@ export const createQueryCache = (
             if (!run.running) {
               if (result.data === undefined) {
                 hydrate(handle, run);
-              } else if (result.error !== null || handle.cursor !== replica.revision) {
-                // A remount sees the cached (possibly stale) result first; the
+              } else if (result.error !== null || handle.revision !== replica.revision) {
+                // A remount sees the retained (possibly stale) result first; the
                 // re-run settles in the same tick for a hydrated replica.
                 execute(handle, run, replica.revision);
               } else {
                 // Nothing relevant landed while the result was inactive, so it is
-                // current at this revision: no read, no re-run.
-                run.at = handle.cursor;
-                refresh(handle, run);
+                // valid at this revision: record that, then publish without a
+                // read or a re-run.
+                handle.seek(replica.revision);
+                refresh(handle);
               }
             }
           } catch (thrown) {

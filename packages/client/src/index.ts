@@ -129,18 +129,18 @@ export {
   type StructuralReads,
   selectionReadComponents,
   structuralReads,
-  queryCacheKey,
+  queryResultKey,
 } from "./sync/selection";
 
 export {
-  type QueryCache,
+  type QueryResults,
   type QueryResult,
   type QuerySource,
   type QueryStatus,
   type QueryStore,
   type QuerySubscribeOptions,
   type QuerySurface,
-} from "./sync/query-cache";
+} from "./sync/query-results";
 
 export {
   createSubscriptionRegistry,

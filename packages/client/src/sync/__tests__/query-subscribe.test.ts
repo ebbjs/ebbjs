@@ -1,12 +1,12 @@
 /**
  * Tests for `QueryBuilder.subscribe` — the change listener for a chain that
- * lowers to the engine-cached result.
+ * lowers to the engine-retained result.
  *
- * `builder.subscribe(listener)` fires on a change event the result store
- * evaluated, and only when that event leaves the cached result different: a
+ * `builder.subscribe(listener)` fires on a change event the results view
+ * evaluated, and only when that event leaves the retained result different: a
  * change to the source or a joined model that preserves the result stays
  * silent, and the listener never fires on subscribe itself — the first run
- * only primes the cache. Membership is not filtered here;
+ * only primes the store. Membership is not filtered here;
  * `EntityNamespace.subscribe` is the membership-filtered surface. A chain over
  * already-materialized rows has no engine binding for a change event, so it
  * refuses `subscribe()` and must be awaited to re-read.

@@ -313,13 +313,13 @@ describe("replica scope eviction (#499)", () => {
     second();
   });
 
-  it("invalidates cached queries when restored rows come back at the same revision", async () => {
+  it("invalidates retained queries when restored rows come back at the same revision", async () => {
     const storage = createMemoryAdapter();
     const client = mkClient(storage, { fetchImpl: streamingFetch() });
     await seedGroups(client);
     client.subscribe(["group_1"], 0, () => {});
 
-    const store = client.queries.watch("rows", emptyQuery("todo"), {
+    const store = client.results.watch("rows", emptyQuery("todo"), {
       ready: () => {},
       isReady: () => true,
       execute: () => client.replica.iterate("todo"),

@@ -12,7 +12,7 @@ builds against. The decision itself is recorded in
 #971, #972, #973, #975, #976, #977, #978, #979, #980, #982, #985, #986, #987. Code:
 `packages/storage/src/replica/{types,replica,content-changed}.ts`,
 `packages/storage/src/internal/{materialize,component-index,reverse-index}.ts`,
-`packages/client/src/sync/{query-execute,query-plan,query-cache,subscriptions,dependency-index,query-builder,namespace,client,scope-eviction,status}.ts`,
+`packages/client/src/sync/{query-execute,query-plan,query-results,subscriptions,dependency-index,query-builder,namespace,client,scope-eviction,status}.ts`,
 `packages/storage/src/types/{entity-store,replica-store}.ts`. Numbers: #966.
 
 ## TL;DR
@@ -21,7 +21,7 @@ builds against. The decision itself is recorded in
   filters stay synchronous and local in every instance (ADR 0002), and no read waits on the writer
   tab being scheduled. Calling the writer for reads was rejected on exactly that dependency.
 - **[from source] The read path is already index-shaped, so a mirror is not a second engine.** `PlanExecutor`
-  is five reads (`scan`, `get`, `relationships`, `memberships`, `components`), and the result cache,
+  is five reads (`scan`, `get`, `relationships`, `memberships`, `components`), and the results view,
   the subscription registry and the dispatcher use only `Replica`'s read half
   (`revision`, `changeFloor`, `changesSince`, `subscribe`, `get`, `iterate`,
   `isComponentResident`, `residentComponents`, `acquire`, `relationships`, `memberships`,
@@ -241,7 +241,7 @@ interface ActionSink {
 On the replica, one new step, and the split the seams already imply:
 
 ```ts
-/** What the engine, the registry and the result cache read. Unchanged. */
+/** What the engine, the registry and the results view read. Unchanged. */
 interface ReplicaRead {
   readonly revision: Revision;
   readonly changeFloor: Revision;
