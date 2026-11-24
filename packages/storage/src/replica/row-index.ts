@@ -11,11 +11,9 @@ import {
 import { jsonBytes } from "./size";
 
 /**
- * One row as the index sees it. The entry owns the row's place in every lookup
- * a query decides on: its model, the components it carries, its live edges and
- * its membership. `fields` is the always-resident set — every leaf component
- * value and every `ebb/*` component value. A map-shaped user component is named
- * in `components` but its value lives in the replica's value cache.
+ * One row's place in every lookup a query decides on. `fields` is the
+ * always-resident set: leaves and `ebb/*` values. A map-shaped user component
+ * is named in `components` but its value lives in the value cache.
  */
 export interface RowEntry {
   readonly id: string;
@@ -42,27 +40,20 @@ export interface RowEntry {
   readonly fields: Readonly<Record<string, FieldValue>>;
 }
 
-/** Every component a row's fields name, in field order. */
-export const componentsOfRow = (row: Entity): readonly string[] =>
-  Object.keys(row.data.fields).map((field) => fieldComponent(row.model, field));
-
 const isAlwaysResident = (component: string, value: FieldValue): boolean =>
   component.startsWith("ebb/") || !isFieldMap(value);
 
-/**
- * The bridge from a materialized row to its entry. It is the only place that
- * decides which values stay in the index: leaf values and platform components
- * do, a map-shaped user component does not.
- */
+/** The only place that decides which values stay in the index. */
 export const entryOf = (row: Entity, versions: Readonly<Record<string, number>> = {}): RowEntry => {
-  const components = componentsOfRow(row);
+  const components: string[] = [];
   const fields: Record<string, FieldValue> = {};
   const stamped: Record<string, number> = {};
   for (const [field, value] of Object.entries(row.data.fields)) {
     const component = fieldComponent(row.model, field);
+    components.push(component);
+    stamped[component] = versions[component] ?? 1;
     if (isAlwaysResident(component, value)) fields[field] = value;
   }
-  for (const component of components) stamped[component] = versions[component] ?? 1;
 
   const deleted = row.deleted_hlc !== null;
   const groupId = deleted ? null : systemValueString(row, "membership", "group_id");

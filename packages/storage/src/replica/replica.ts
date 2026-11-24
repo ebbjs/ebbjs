@@ -1,6 +1,5 @@
 import {
   componentField,
-  fieldComponent,
   isComponentUpdate,
   type Action,
   type Entity,
@@ -14,14 +13,14 @@ import {
   withAdoptedMapFields,
   withWireMapFields,
 } from "../internal/materialize";
-import { touchedComponentSet } from "../internal/component-index";
+import { componentsOf, touchedComponentSet } from "../internal/component-index";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
 import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
 import { createLeaseTable, type LeaseKey, type LeaseTable, type Release } from "./leases";
-import { componentsOfRow, createRowIndex, entryOf, type RowEntry } from "./row-index";
+import { createRowIndex, entryOf, type RowEntry } from "./row-index";
 import { jsonBytes } from "./size";
 import type {
   MembershipQuery,
@@ -171,15 +170,9 @@ const recordBytes = (shape: Readonly<Record<string, unknown>>): number =>
   Object.keys(shape).length === 0 ? 0 : jsonBytes(shape);
 
 /**
- * Mutable in-place core. `index` owns every row's place in the lookups a query
- * reads; `values` owns the component values that may leave memory. Together
- * they replace the old base row map: `get` composes the entry's always-resident
- * fields with whatever values are resident, and `iterate` answers with the
- * entry alone.
- *
- * The overlay still composes optimistic writes over the durable base. For an
- * overlaid row the base is kept in `overlaidBase`, so discarding the writes can
- * restore it; every other row's base is its index entry plus the value cache.
+ * `index` owns every lookup a query reads; `values` owns the component values
+ * that may leave memory. For an overlaid row the durable base is kept in
+ * `overlaidBase`, so discarding the writes can restore it.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const declaredVersion = (component: string): number =>
@@ -188,19 +181,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const index = createRowIndex();
   /** Values that do not live in an entry: the map-shaped user components. */
   const values = new Map<string, Readonly<Record<string, FieldValue>>>();
-  /**
-   * The row objects iterate and get answer with, one per entry. They are views
-   * of entries and values, not a third retained category, so `bytes` counts
-   * the data they point at rather than the caches. Keeping them stable is what
-   * makes a shared row read share one object.
-   */
+  // Cached row objects: iterate answers with entry fields, get with the
+  // composition. `bytes` counts their data, not the caches.
   const entryRows = new Map<string, Entity>();
   const composedRows = new Map<string, Entity>();
-  /**
-   * Components whose values a read installed from the local store, and which
-   * therefore may leave again when their last claim expires. A value the log
-   * folded is the replica's own data and never expires.
-   */
+  /** Values a read installed, so a log-folded value can stay resident. */
   const storeOwned = new Map<string, Set<string>>();
   const overlay = new Map<string, OptimisticWrite[]>();
   /** The durable base under an overlaid row, kept only while writes are pending. */
@@ -325,11 +310,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
   };
 
-  /**
-   * The composed row: the entry's always-resident fields plus the values the
-   * cache holds. A missing map value makes the row partial; a query acquires
-   * before projecting.
-   */
+  /** The entry fields plus whatever values the cache holds. */
   const viewOf = (id: string): Entity | null => {
     const entry = index.get(id);
     if (entry === undefined) return null;
@@ -398,20 +379,30 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const versionsForRow = (
     previous: Readonly<Record<string, number>>,
     row: Entity | null,
-    written: ReadonlySet<string> = new Set(),
+    written?: ReadonlySet<string>,
   ): Readonly<Record<string, number>> => {
     if (row === null) return {};
     const versions: Record<string, number> = {};
-    for (const component of componentsOfRow(row)) {
-      versions[component] = written.has(component)
-        ? declaredVersion(component)
-        : (previous[component] ?? declaredVersion(component));
+    for (const component of componentsOf(row)) {
+      versions[component] =
+        written?.has(component) === true
+          ? declaredVersion(component)
+          : (previous[component] ?? declaredVersion(component));
     }
     return versions;
   };
 
   const updateComponent = (update: Update): string | null =>
     isComponentUpdate(update) && update.method !== "drop" ? update.component : null;
+
+  const versionsForUpdate = (
+    previous: Readonly<Record<string, number>>,
+    row: Entity | null,
+    update: Update,
+  ): Readonly<Record<string, number>> => {
+    const component = updateComponent(update);
+    return versionsForRow(previous, row, component === null ? undefined : new Set([component]));
+  };
 
   /** The component an update stamps at its declaration, if it writes a value. */
   const writtenComponents = (updates: readonly Update[]): ReadonlySet<string> => {
@@ -423,10 +414,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return written;
   };
 
-  /**
-   * A row with the value cache folded in. A base row under optimistic writes
-   * keeps only durable values; the map values a read installed live here.
-   */
+  /** Fold the value cache into a base row that holds only durable values. */
   const withResidentValues = (id: string, row: Entity | null): Entity | null => {
     const extra = values.get(id);
     if (row === null || extra === undefined) return row;
@@ -442,25 +430,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return row;
   };
 
-  /**
-   * Settle the index on the composed view. A row with no pending writes brings
-   * its base back into the index; an overlaid row is recomposed and set again,
-   * which is the one place a write reaches the model, component, edge and
-   * membership maps.
-   */
+  /** Settle the index on the composed view; the one write path for lookups. */
   const deriveIndex = (id: string): void => {
     const overlaid = overlaidBase.get(id);
     if (overlaid === undefined) return;
     const writes = overlay.get(id) ?? [];
     const row = composeRow(id, overlaid.row);
-    const versions =
-      writes.length === 0
-        ? versionsForRow(overlaid.versions, row)
-        : versionsForRow(
-            overlaid.versions,
-            row,
-            writtenComponents(writes.map((write) => write.update)),
-          );
+    const versions = versionsForRow(
+      overlaid.versions,
+      row,
+      writes.length === 0 ? undefined : writtenComponents(writes.map((write) => write.update)),
+    );
     if (writes.length === 0) overlaidBase.delete(id);
     if (row === null) removeRow(id);
     else setIndexedRow(id, row, versions);
@@ -506,11 +486,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const overlaid = overlaidBase.get(id);
     if (overlaid !== undefined) {
       const next = applyUpdate(overlaid.row, update, gsn, hlc, RESIDENT_MAP_FIELDS);
-      const component = updateComponent(update);
-      const versions =
-        component === null
-          ? overlaid.versions
-          : versionsForRow(overlaid.versions, next, new Set([component]));
+      const versions = versionsForUpdate(overlaid.versions, next, update);
       overlaidBase.set(id, { row: next, versions });
       storeOwned.delete(id);
       return;
@@ -534,12 +510,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // A write moves the row into the log's own materialized base: its values
     // are the replica's data now, so no lease expiry may take them away.
     storeOwned.delete(id);
-    const component = updateComponent(update);
-    const versions =
-      component === null
-        ? versionsForRow(entry?.versions ?? {}, next)
-        : versionsForRow(entry?.versions ?? {}, next, new Set([component]));
-    setIndexedRow(id, next, versions);
+    setIndexedRow(id, next, versionsForUpdate(entry?.versions ?? {}, next, update));
   };
 
   /**
@@ -760,7 +731,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       // adopted whole and become the replica's own data again.
       const row = withAdoptedMapFields(entity);
       const versions: Record<string, number> = {};
-      for (const component of componentsOfRow(row)) {
+      for (const component of componentsOf(row)) {
         versions[component] =
           record.componentVersions[row.id]?.[component] ?? declaredVersion(component);
       }
@@ -794,7 +765,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       persisted.push(withWireMapFields(row));
       const stamped = base === undefined ? entry.versions : base.versions;
       const shape: Record<string, number> = {};
-      for (const component of componentsOfRow(row)) {
+      for (const component of componentsOf(row)) {
         shape[component] = stamped[component] ?? declaredVersion(component);
       }
       if (Object.keys(shape).length > 0) versions[row.id] = shape;
@@ -899,10 +870,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Drop a value whose claim went inactive for longer than the residency grace
-   * period. Expiry is a residency event, not a content change: the value leaves
-   * the composed view and nothing journals (#936). Only a value a read
-   * installed may leave; a value the log folded is the replica's own data.
+   * Expire a value whose claim went inactive past the grace period. Residency,
+   * not content: the index and journal do not move (#936).
    */
   const dropResidentValue = (key: LeaseKey): void => {
     // A timer armed by a table a `load` has since replaced must not drop a value
@@ -941,10 +910,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Install a component read for `id`, then replay the writes that waited
-   * behind it. A component the entry already names is a residency move: only
-   * its value lands in the cache and the index is untouched. A component the
-   * row does not know is a store install, which derives a whole entry.
+   * Install a read. A known component is a residency move; an unknown one is a
+   * store install that derives a whole entry.
    */
   const installComponent = (id: string, component: string, loaded: Entity): boolean => {
     const field = componentField(component);
@@ -992,7 +959,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     } else {
       setIndexedRow(id, row, versions);
     }
-    ownFromStore(id, componentsOfRow(row));
+    ownFromStore(id, componentsOf(row));
     replayBufferedWrites(id);
     notify();
     return true;
@@ -1059,15 +1026,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   /** Whether the replica holds a value for every component `row` carries. */
   const fullyResident = (row: Entity): boolean =>
-    Object.keys(row.data.fields)
-      .map((field) => fieldComponent(row.model, field))
-      .every((component) => isComponentResident(row.id, component));
+    componentsOf(row).every((component) => isComponentResident(row.id, component));
 
   const residentComponents = (id: string): readonly string[] => {
     const row = viewOf(id);
-    return row === null
-      ? []
-      : Object.keys(row.data.fields).map((field) => fieldComponent(row.model, field));
+    return row === null ? [] : componentsOf(row);
   };
 
   const read = async (id: string, components: readonly string[]): Promise<Entity | null> => {

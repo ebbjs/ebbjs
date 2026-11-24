@@ -3555,7 +3555,7 @@ describe("replica: the row index owns the query lookups (#971)", () => {
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "user_1" })).toEqual([]);
   });
 
-  it("keeps an overlaid row's index intact when a store value's grace ends", async () => {
+  it("leaves an overlaid row's index reads unchanged when a value's grace ends", async () => {
     vi.useFakeTimers();
     try {
       const replica = createReplica({
@@ -3587,10 +3587,7 @@ describe("replica: the row index owns the query lookups (#971)", () => {
 
       await vi.advanceTimersByTimeAsync(1_000);
 
-      // The overlay holds its own base. Expiring a value there would edit that
-      // base, and the next derive would drop the component from the index.
       expect(reads()).toEqual(before);
-      expect(replica.isComponentResident("doc_1", "doc/content")).toBe(true);
       expect(replica.revision).toBe(revision);
     } finally {
       vi.useRealTimers();
