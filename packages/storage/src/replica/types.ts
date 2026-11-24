@@ -27,11 +27,53 @@ export type MembershipTransition = "entered" | "left" | "changed-model";
  */
 export type ReplicaChange = ContentChange | MembershipChange;
 
+/**
+ * What a change moved that the post-change row no longer shows: the edges and
+ * the components whose existence moved, and the membership groups on both
+ * sides. The journal is the only place an old state is still in hand, so a
+ * derived reader learns it here instead of guessing from the new row.
+ *
+ * Every part is optional and omitted when nothing moved, so a value write to an
+ * existing component carries no delta at all.
+ */
+export interface ChangeDelta {
+  /**
+   * Live target ids added and removed under each `(as, type)` on `ebb/link`.
+   * A tombstoned row contributes no live edges, so deleting a row removes all
+   * of its targets.
+   */
+  readonly edges?: readonly {
+    readonly as: string;
+    readonly type: string;
+    readonly added: readonly string[];
+    readonly removed: readonly string[];
+  }[];
+  /**
+   * Components whose existence changed, as opposed to their value. Not the
+   * ephemeral Presence primitive: an entity carries a component or it does not.
+   */
+  readonly existence?: {
+    readonly added: readonly string[];
+    readonly removed: readonly string[];
+  };
+  /** The row's own `ebb/membership` group ids on each side. */
+  readonly groups?: {
+    readonly before: readonly string[];
+    readonly after: readonly string[];
+  };
+}
+
 interface ChangeBase {
   readonly revision: Revision;
   readonly id: string;
   /** Whether the row is tombstoned after the change. */
   readonly deleted: boolean;
+  /**
+   * Which index keys the change added and removed, when anything moved. It is
+   * what lets a reader resolve a relation or a scope from the change alone: a
+   * dropped edge or a group the row left is gone from the row itself.
+   */
+  readonly delta?: ChangeDelta;
 }
 
 /** A change to the values of a row that stayed in the set it was read from. */

@@ -18,11 +18,13 @@ import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica
 import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
+import { changeDeltaOf } from "./change-delta";
 import { contentChanged } from "./content-changed";
 import { createLeaseTable, type LeaseKey, type LeaseTable, type Release } from "./leases";
-import { createRowIndex, entryOf, type RowEntry } from "./row-index";
+import { createRowIndex, entryOf, sourceRow, type RowEntry } from "./row-index";
 import { jsonBytes } from "./size";
 import type {
+  ChangeDelta,
   MembershipQuery,
   MembershipTransition,
   Replica,
@@ -263,9 +265,15 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /** Append one content change: the values of a row that stayed in its set. */
-  const journalContent = (id: string, deleted: boolean, components: readonly string[]): void => {
+  const journalContent = (
+    id: string,
+    deleted: boolean,
+    components: readonly string[],
+    delta?: ChangeDelta,
+  ): void => {
     revision += 1;
-    journal.push({ revision, id, kind: "content", deleted, components });
+    const change: ReplicaChange = { revision, id, kind: "content", deleted, components };
+    journal.push(delta === undefined ? change : { ...change, delta });
     trimJournal();
   };
 
@@ -278,19 +286,13 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     deleted: boolean,
     membership: MembershipTransition,
     models: readonly string[],
+    delta?: ChangeDelta,
   ): void => {
     revision += 1;
-    journal.push({ revision, id, kind: "membership", deleted, membership, models });
+    const change: ReplicaChange = { revision, id, kind: "membership", deleted, membership, models };
+    journal.push(delta === undefined ? change : { ...change, delta });
     trimJournal();
   };
-
-  /**
-   * The row as the set a read is drawn from sees it: a tombstone is a value, so
-   * a tombstoned row is not in the set even while the replica holds its row, and
-   * a row no create has filed under a model yet belongs to none.
-   */
-  const sourceRow = (row: Entity | null): Entity | null =>
-    row !== null && row.model !== "" && row.deleted_hlc === null ? row : null;
 
   const retainedChanges = (): number => journal.length - journalStart;
 
@@ -559,34 +561,34 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const resync = (id: string, previous: Snapshot): void => {
     deriveIndex(id);
     const view = viewOf(id);
+    const components = index.get(id)?.components ?? [];
+    // The old side of every index key is only in hand here, so the delta is
+    // recorded now and rides whichever change this write journals — a row that
+    // left removes edges and a group the post-change row cannot name.
+    const delta = changeDeltaOf(id, previous, { row: view, components });
     const before = sourceRow(previous.row);
     const after = sourceRow(view);
 
     if (after !== null) {
       if (before === null) {
-        journalMembership(id, false, "entered", [after.model]);
+        journalMembership(id, false, "entered", [after.model], delta);
         return;
       }
       if (before.model !== after.model) {
-        journalMembership(id, false, "changed-model", [before.model, after.model]);
+        journalMembership(id, false, "changed-model", [before.model, after.model], delta);
         return;
       }
     } else if (before !== null) {
-      journalMembership(id, view?.deleted_hlc != null, "left", [before.model]);
+      journalMembership(id, view?.deleted_hlc != null, "left", [before.model], delta);
       return;
     }
 
     // A row out of the set on both sides and absent now is unobservable: there
     // is nothing left to name.
     if (view === null) return;
-    const touched = touchedComponentSet(
-      previous.row,
-      previous.components,
-      view,
-      index.get(id)?.components ?? [],
-    );
+    const touched = touchedComponentSet(previous.row, previous.components, view, components);
     if (contentChanged(previous.row, view) || touched.length > 0) {
-      journalContent(id, view.deleted_hlc !== null, touched);
+      journalContent(id, view.deleted_hlc !== null, touched, delta);
     }
   };
 
@@ -680,9 +682,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Eviction is a visible removal, so each dropped row journals one membership
-   * change naming the model it was filed under — it leaves that set, and which
-   * components it carried is not what a reader matches on.
+   * Eviction is a visible removal, so each dropped row journals one change
+   * naming what it took with it: the model it was filed under, and the edges and
+   * group no longer readable from the row.
    */
   const evict = (ids: readonly string[]): Revision => {
     const seen = new Set<string>();
@@ -695,12 +697,13 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       for (const component of previous.components) leases.forget({ entityId: id, component });
       if (previous.row === null) continue;
       removed = true;
+      const delta = changeDeltaOf(id, previous, { row: null, components: [] });
       const filed = sourceRow(previous.row);
       // A row no model has filed belongs to no set, so what a reader loses is
       // the values it carried rather than a place in a model.
       if (filed === null)
-        journalContent(id, previous.row.deleted_hlc !== null, previous.components);
-      else journalMembership(id, previous.row.deleted_hlc !== null, "left", [filed.model]);
+        journalContent(id, previous.row.deleted_hlc !== null, previous.components, delta);
+      else journalMembership(id, previous.row.deleted_hlc !== null, "left", [filed.model], delta);
     }
     if (removed) notify();
     return revision;

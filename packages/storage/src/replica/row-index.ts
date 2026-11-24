@@ -76,6 +76,14 @@ export const entryOf = (row: Entity, versions: Readonly<Record<string, number>> 
   };
 };
 
+/**
+ * The row as the set a read is drawn from sees it: a tombstone is a value, so a
+ * tombstoned row is not in the set even while the replica holds its row, and a
+ * row no create has filed under a model yet belongs to none.
+ */
+export const sourceRow = (row: Entity | null): Entity | null =>
+  row !== null && row.model !== "" && row.deleted_hlc === null ? row : null;
+
 /** One live membership row: the pair it files and the row that files it. */
 export interface MembershipRow {
   readonly membershipId: string;
