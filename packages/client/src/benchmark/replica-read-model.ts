@@ -33,6 +33,7 @@ import type { ReplicaRecord } from "@ebbjs/storage/types";
 import { fieldComponent, makeHlc } from "@ebbjs/core";
 import { emptyQuery, type Query } from "../sync/query";
 import { createChangeDispatcher } from "../sync/dependency-index";
+import { createIndexResolvers, relationIndex } from "../sync/index-resolvers";
 import { createQueryResults, type QuerySource } from "../sync/query-results";
 import { createReplicaExecutor, executePlan, patchResultRows } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";
@@ -95,6 +96,12 @@ const MOUNT_REMOUNTS = 100;
 const DISPATCH_ROW_SUBSCRIPTIONS = 4_000;
 const DISPATCH_QUERY_SUBSCRIPTIONS = 1_000;
 const DISPATCH_CHANGES = 100;
+/**
+ * The relationship-heavy fixture (#961): subscriptions that follow one relation
+ * target each, and a batch of writes to those target rows.
+ */
+const DISPATCH_RELATION_SUBSCRIPTIONS = 1_000;
+const DISPATCH_RELATION_CHANGES = 100;
 /** The #495 spike's one-pass projection build at the same 10k shape. */
 const SPIKE_PROJECTION_BUILD_MS = 37.0;
 
@@ -1083,6 +1090,78 @@ const measureDispatch = (): {
 
 const dispatch = measureDispatch();
 
+/**
+ * The relationship-heavy batch #961 measures: a subscription per relation
+ * target, then one batch of writes to those targets. Before the index, a join
+ * read its target model whole, so every write to a `page` touched every
+ * subscription. The relation index keys each subscription on its own target,
+ * so only the changed targets are touched.
+ */
+const measureRelationDispatch = (): {
+  readonly subscriptions: number;
+  readonly changes: number;
+  readonly beforeTouched: number;
+  readonly afterTouched: number;
+  readonly afterLookups: number;
+} => {
+  const subscriptions = Math.min(DISPATCH_RELATION_SUBSCRIPTIONS, config.n);
+  const changes = Math.min(DISPATCH_RELATION_CHANGES, subscriptions);
+  const relation = relationIndex("parent", "page");
+  /** One distinct target per subscription, spread across the id space. */
+  const targetFor = (index: number): string =>
+    pageId(Math.floor(((index + 0.5) * config.n) / subscriptions));
+  const before = createChangeDispatcher<{ readonly id: number }>({
+    journal: replica,
+    onChange: () => {},
+  });
+  const after = createChangeDispatcher<{ readonly id: number }>({
+    journal: replica,
+    indices: createIndexResolvers(replica),
+    onChange: () => {},
+  });
+  for (let index = 0; index < subscriptions; index += 1) {
+    // Before #961: the join read `ebb/link` and the target model whole.
+    before.add({ id: index }, { components: ["ebb/link"], models: ["page"] });
+    after.add({ id: index }, { indices: [{ index: relation, key: targetFor(index) }] });
+  }
+  const updates = Array.from({ length: changes }, (_, index) => {
+    benchPosition += 1;
+    const updateId = `u_relation_${benchPosition}`;
+    return {
+      id: updateId,
+      subject_id: targetFor(index),
+      component: "page/title" as const,
+      method: "replace" as const,
+      data: { value: `Relation ${index}`, update_id: updateId, hlc: makeHlc(benchPosition) },
+    };
+  });
+  benchPosition += 1;
+  replica.ingest(
+    {
+      id: `a_relation_${benchPosition}`,
+      actor_id: "bench",
+      hlc: makeHlc(benchPosition),
+      gsn: benchPosition,
+      updates: [],
+    },
+    updates,
+    benchPosition,
+  );
+  const beforeStats = before.stats();
+  const afterStats = after.stats();
+  before.close();
+  after.close();
+  return {
+    subscriptions,
+    changes,
+    beforeTouched: beforeStats.touched,
+    afterTouched: afterStats.touched,
+    afterLookups: afterStats.lookups,
+  };
+};
+
+const relationDispatch = measureRelationDispatch();
+
 // ---------------------------------------------------------------------------
 // 8. Memory by category (#966)
 // ---------------------------------------------------------------------------
@@ -1637,6 +1716,20 @@ push(
   `| subscriptions touched / change | ${fixed(dispatch.touched / dispatch.changes, 2)} |`,
   `| index lookups / batch | ${grouped(dispatch.lookups)} |`,
   `| scan work avoided (changes × subscriptions) | ${grouped(dispatch.scanWork)} |`,
+  "",
+  "A relationship-heavy batch (#961): one subscription per relation target, then one batch of",
+  "writes to `page/title` on those targets. Before the index, a joined read declared `ebb/link`",
+  "and the target model whole, so every write to a page touched every subscription. The",
+  "`relation:parent/page` index keys each subscription on its own target, so only the changed",
+  "targets are touched; a link write still falls back to every reader of the relation, because",
+  "the journal names the component, not the target an edge dropped.",
+  "",
+  "| measure | before #961 | after #961 |",
+  "| --- | ---: | ---: |",
+  `| subscriptions indexed | ${grouped(relationDispatch.subscriptions)} | ${grouped(relationDispatch.subscriptions)} |`,
+  `| changes in the batch | ${grouped(relationDispatch.changes)} | ${grouped(relationDispatch.changes)} |`,
+  `| subscriptions touched / batch | ${grouped(relationDispatch.beforeTouched)} | ${grouped(relationDispatch.afterTouched)} |`,
+  `| index lookups / batch | — | ${grouped(relationDispatch.afterLookups)} |`,
   "",
 );
 

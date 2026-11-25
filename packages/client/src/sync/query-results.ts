@@ -603,13 +603,20 @@ export const createQueryResults = (
       // only the latter needs the source and joined models read whole.
       const readNames =
         surface === "rows" ? selectionReadComponents(query) : planQuery(query).readComponents;
-      const sources = structuralReads(query).rows;
-      const spec: SubscriptionSpec = { kind: "query", key, reads: readNames, sources };
+      const structural = structuralReads(query);
+      const spec: SubscriptionSpec = {
+        kind: "query",
+        key,
+        reads: readNames,
+        sources: structural.rows,
+        indices: structural.indices,
+        covered: structural.covered,
+      };
 
       const runFor = (): QueryRun<T> => ({
         surface,
         query,
-        reads: compileReadComponents(readNames, sources),
+        reads: compileReadComponents(readNames, structural.rows),
         patchShape: patchShapeOf(query),
         source,
         listeners: new Map(),

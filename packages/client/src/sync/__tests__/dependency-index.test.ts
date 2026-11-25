@@ -283,7 +283,10 @@ describe("dependency-indexed dispatch: correctness", () => {
       },
       onChange: (entry) => notified.add(entry.id),
     });
-    dispatcher.add({ id: 1 }, { components: ["note/title"] });
+    dispatcher.add(
+      { id: 1 },
+      { components: ["note/title"], indices: [{ index: "membership", key: "n_1" }] },
+    );
     dispatcher.add({ id: 2 }, { components: ["note/content"] });
 
     journal.publish([change("n_1", ["note/title"], 1)]);
@@ -294,6 +297,71 @@ describe("dependency-indexed dispatch: correctness", () => {
     expect(dispatcher.stats()).toEqual({ touched: 2, lookups: 0, scanWork: 2 });
     expect(reported).toHaveBeenCalled();
     reported.mockRestore();
+  });
+
+  it("touches every entry that declared an index when the resolver cannot resolve the change", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: {
+        "relation:*": (change) =>
+          change.kind === "content" && change.components.includes("ebb/link") ? null : [change.id],
+      },
+      onChange: (entry) => notified.add(entry.id),
+    });
+    const relation = "relation:author/page";
+    dispatcher.add({ id: 1 }, { indices: [{ index: relation, key: "u_1" }] });
+    dispatcher.add({ id: 2 }, { indices: [{ index: relation, key: "u_2" }] });
+    // Declares no relation index, so a fallback for one must not reach it.
+    dispatcher.add({ id: 3 }, { components: ["note/title"] });
+
+    notified.clear();
+    journal.publish([change("p_1", ["page/title"], 1)]);
+    expect([...notified].sort((a, b) => a - b)).toEqual([]);
+
+    // The row is a target: a read keyed on it was named.
+    notified.clear();
+    journal.publish([change("u_1", ["user/name"], 2)]);
+    expect([...notified].sort((a, b) => a - b)).toEqual([1]);
+
+    // A link write may have removed an edge whose target the resolver cannot
+    // name, so every entry that declared the index is touched.
+    notified.clear();
+    journal.publish([change("p_1", ["ebb/link"], 3)]);
+    expect([...notified].sort((a, b) => a - b)).toEqual([1, 2]);
+    expect(dispatcher.stats().touched).toBe(2);
+  });
+
+  it("serves dynamically named indices from a namespace resolver", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: { "exists:*": (change) => (change.kind === "content" ? change.components : []) },
+      onChange: (entry) => notified.add(entry.id),
+    });
+    dispatcher.add({ id: 1 }, { indices: [{ index: "exists:todo/due", key: "todo/due" }] });
+    dispatcher.add({ id: 2 }, { indices: [{ index: "exists:todo/owner", key: "todo/owner" }] });
+    dispatcher.add({ id: 3 }, { components: ["todo/title"] });
+
+    journal.publish([change("t_1", ["todo/due"], 1)]);
+    expect([...notified].sort((a, b) => a - b)).toEqual([1]);
+  });
+
+  it("treats a declared index with no resolver as unresolvable", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      onChange: (entry) => notified.add(entry.id),
+    });
+    dispatcher.add({ id: 1 }, { indices: [{ index: "unknown", key: "a" }] });
+    dispatcher.add({ id: 2 }, { components: ["note/title"] });
+
+    journal.publish([change("n_1", ["other/title"], 1)]);
+
+    expect([...notified]).toEqual([1]);
   });
 
   it("notifies in registration order", () => {

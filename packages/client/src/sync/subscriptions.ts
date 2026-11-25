@@ -52,7 +52,7 @@
  * than pinning a body in silence.
  */
 
-import { componentModel, EBB_COMPONENTS, systemValueString } from "@ebbjs/core";
+import { componentModel } from "@ebbjs/core";
 import {
   residencyTtlOf,
   unrefTimer,
@@ -66,8 +66,11 @@ import {
 import {
   createChangeDispatcher,
   type ChangeBatch,
+  type DispatchCounts,
+  type IndexDependency,
   type SubscriptionDependencies,
 } from "./dependency-index";
+import { MEMBERSHIP_INDEX, createIndexResolvers } from "./index-resolvers";
 import { compileReadComponents, type CompiledReadComponents } from "./query-plan";
 import type { PatchShape } from "./query-execute";
 
@@ -114,6 +117,18 @@ export type SubscriptionSpec =
        * component, so this is what carries a membership dependency.
        */
       readonly sources?: readonly string[];
+      /**
+       * Derived-index reads the query declared (#961): a relation target, a
+       * component's existence, a group scope. Dispatch matches these instead
+       * of the component names in {@link SubscriptionSpec.covered}.
+       */
+      readonly indices?: readonly IndexDependency[];
+      /**
+       * Components the declared indices replace as the dispatcher's match key.
+       * The read set keeps them for claims and re-checks; dispatch leaves them
+       * to a resolver, which falls back to the read set's breadth.
+       */
+      readonly covered?: readonly string[];
     }
   | {
       readonly kind: "row";
@@ -255,6 +270,8 @@ export interface SubscriptionStats {
   readonly dependencies: number;
   /** Claims still resolving; a non-zero count after a settle is a leak. */
   readonly pending: number;
+  /** What the last dispatched batch cost the dependency indices. */
+  readonly dispatch: DispatchCounts;
 }
 
 /**
@@ -394,14 +411,6 @@ export const patchableRows = (
 };
 
 /**
- * The derived index a row subscription depends on: the member entity its
- * membership row files. A link is a key of its source row, so a row carrying
- * `ebb/link` is its own subject and the row index already answers for it; a
- * membership row names a different row, which is what this index is for.
- */
-const MEMBERSHIP_INDEX = "membership";
-
-/**
  * The values a row subscription claims: the components its read selected that
  * the replica holds, or every component the row carries when it selected
  * nothing. A selected component that never arrived was never leased, so
@@ -465,14 +474,30 @@ const indexDependencies = (entry: {
   readonly kind: SubscriptionKind;
   readonly row: string | null;
   readonly reads: ReadSet;
-}): SubscriptionDependencies =>
-  entry.kind === "row" && entry.row !== null
-    ? { rows: [entry.row], indices: [{ index: MEMBERSHIP_INDEX, key: entry.row }] }
-    : {
-        components: [...entry.reads.components],
-        models: [...entry.reads.models],
-        sources: [...entry.reads.sources],
-      };
+  readonly indices: readonly IndexDependency[];
+  readonly covered: readonly string[];
+}): SubscriptionDependencies => {
+  if (entry.kind === "row" && entry.row !== null) {
+    return { rows: [entry.row], indices: [{ index: MEMBERSHIP_INDEX, key: entry.row }] };
+  }
+  // A component an index read subsumes stays in the read set (it is leased and
+  // re-checked there) but not in the dispatch set: the resolver is the
+  // narrower key, and answers `null` when it cannot narrow, which touches every
+  // entry that declared the index — the component set's breadth, never less.
+  const covered = new Set(entry.covered);
+  // A covered whole-model dependency also covers the exact components claims
+  // add later: a joined target row's resident values are claimed as
+  // `user/name`, and leaving that in the dispatch set would undo the join
+  // narrowing the index was introduced for.
+  const isCovered = (component: string): boolean =>
+    covered.has(component) || covered.has(`${componentModel(component)}/*`);
+  return {
+    components: [...entry.reads.components].filter((component) => !isCovered(component)),
+    models: [...entry.reads.models].filter((model) => !covered.has(`${model}/*`)),
+    sources: [...entry.reads.sources],
+    indices: entry.indices,
+  };
+};
 
 /** Mutable entry state behind a read-only handle. */
 interface Entry<TResult, TConsumer = unknown> {
@@ -485,6 +510,10 @@ interface Entry<TResult, TConsumer = unknown> {
   readonly declaredReads: readonly string[];
   /** Models whose row set a query read observes; empty for a row read. */
   readonly declaredSources: readonly string[];
+  /** Derived-index reads a query declared; empty for a row read. */
+  readonly indices: readonly IndexDependency[];
+  /** Components the declared indices replace as the dispatcher's match key. */
+  readonly covered: readonly string[];
   /** The components a row read selected; absent claims every resident one. */
   readonly rowComponents: readonly string[] | undefined;
   /** The consumer state the entry was opened with; never interpreted here. */
@@ -940,22 +969,9 @@ export const createSubscriptionRegistry = (
     if (caughtUp && !entry.declared) entry.revision = batch.revision;
   };
 
-  const membershipSubjects = (change: ReplicaChange): readonly string[] => {
-    // A membership row files a different row than the one it is, so the member
-    // is only reachable by reading the changed row — once per change, not once
-    // per subscription. A membership row arriving or leaving is a membership
-    // change that names no component, so the row itself says what it files.
-    if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.membership))
-      return [];
-    const changed = replica.get(change.id);
-    if (changed === undefined) return [];
-    const id = systemValueString(changed, MEMBERSHIP_INDEX, "entity_id");
-    return id !== null && id.length > 0 ? [id] : [];
-  };
-
   const dispatcher = createChangeDispatcher<Entry<unknown>>({
     journal: replica,
-    indices: { [MEMBERSHIP_INDEX]: membershipSubjects },
+    indices: createIndexResolvers(replica),
     onChange: notify,
   });
 
@@ -1043,6 +1059,8 @@ export const createSubscriptionRegistry = (
         mapKey,
         declaredReads: declaredReads(spec),
         declaredSources: declaredSources(spec),
+        indices: spec.kind === "query" ? (spec.indices ?? []) : [],
+        covered: spec.kind === "query" ? (spec.covered ?? []) : [],
         rowComponents: spec.kind === "row" ? spec.components : undefined,
         consumer: consumer as TConsumer,
         listeners: new Set(),
@@ -1104,7 +1122,14 @@ export const createSubscriptionRegistry = (
         dependencies += entry.dependencies.reduce((count, dep) => count + dep.components.length, 0);
         pending += entry.pending;
       }
-      return { live, inactive, byKind: { query, row }, dependencies, pending };
+      return {
+        live,
+        inactive,
+        byKind: { query, row },
+        dependencies,
+        pending,
+        dispatch: dispatcher.stats(),
+      };
     },
     close: () => {
       if (closed) return;
