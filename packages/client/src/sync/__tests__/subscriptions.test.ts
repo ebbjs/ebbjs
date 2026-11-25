@@ -924,6 +924,31 @@ describe("subscription registry: consumer-supplied index keys (#1007)", () => {
     expect(subscriptions.peek("query", "held")?.state).toBe("inactive");
   });
 
+  it("touches an entry once for a key it supplied twice or also declared", () => {
+    const { replica, subscriptions } = harness();
+    // One key supplied by the consumer and declared by the spec, one key
+    // supplied twice: `(index, key)` is the identity, so each entry holds the
+    // key once whatever shape it arrived in.
+    const declared = subscriptions.open({
+      kind: "query",
+      key: "declared",
+      reads: [],
+      indices: [{ index: "membership", key: "doc_1" }],
+    });
+    declared.depend([], [{ index: "membership", key: "doc_1" }]);
+    const twice = indexed(subscriptions, "twice", ["doc_1", "doc_1"]);
+    const seen: string[] = [];
+    declared.onChange(() => seen.push("declared"));
+    twice.onChange(() => seen.push("twice"));
+
+    file(replica, "eg_1", "doc_1", "grp_1", 2);
+
+    // One change, one touch per entry: the duplicate is merged away, so the
+    // batch finds two entries rather than four lookups' worth of them.
+    expect(seen.sort()).toEqual(["declared", "twice"]);
+    expect(subscriptions.stats().dispatch.touched).toBe(2);
+  });
+
   it("leaves a row subscription on its own row and its membership row", async () => {
     const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
     await replica.read("doc_1", [LAZY]);
