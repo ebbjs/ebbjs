@@ -315,7 +315,7 @@ const QUERIES: readonly { readonly name: string; readonly query: Query }[] = [
     query: query({
       source: "todo",
       groups: [[{ kind: "existence", component: "todo/due", present: true }]],
-      selected: selection("todo", ["title"]),
+      selected: selection("todo", ["title", "due"]),
     }),
   },
   {
@@ -759,6 +759,35 @@ const knownMisses = (h: Harness, after: (label: string) => void): readonly strin
   ]);
   // An existence transition.
   write("drop todo_0 due", [change("todo_0", "todo/due", "drop", null, sequence)]);
+  // One Action moving two components: `todo/due`'s value changes while another
+  // component arrives. The read set covers `todo/due`, so only the existence
+  // answer can hand the read a value write it must re-project.
+  const exists = h.watched.find((entry) => entry.name === "has(due)");
+  if (exists === undefined) throw new Error("no existence query");
+  const existsBefore = runQuery(h.replica, exists.query);
+  write("todo_1 due value with a new tag", [
+    change(
+      "todo_1",
+      "todo/due",
+      "replace",
+      { value: 3, update_id: `u_${sequence}_due`, hlc },
+      sequence,
+    ),
+    change(
+      "todo_1",
+      "todo/tag",
+      "replace",
+      { value: "tag_1", update_id: `u_${sequence}_tag`, hlc },
+      sequence,
+    ),
+  ]);
+  expect(
+    runQuery(h.replica, exists.query),
+    "the due value write must change the existence result",
+  ).not.toEqual(existsBefore);
+  expect(exists.store.getSnapshot().data, "the existence read must follow the due value").toEqual(
+    runQuery(h.replica, exists.query),
+  );
   // A source row of a self-relation (`parent` is page -> page): its own
   // projection is not covered by the join's target model.
   write("page_1 title (self-relation source)", [

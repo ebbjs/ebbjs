@@ -2,8 +2,9 @@
  * The `exists:<component>` index family (#961, #1003).
  *
  * An existence predicate reads whether one component is present, so the index
- * is keyed by that component and a content change that names it is the only
- * change that can move the answer.
+ * is keyed by that component. A change can move that answer by writing the
+ * component, by carrying an existence delta for it, or by a row arriving or
+ * leaving, so every change shape is answered from what it carries.
  */
 
 import type { ReplicaChange } from "@ebbjs/storage/replica";
@@ -33,15 +34,30 @@ const existsDependency = (component: string): IndexDependency => ({
 });
 
 /**
- * Every existence index keys on the component it tests, so the resolver reads
- * the component out of the index name and answers a content change that names
- * it. Membership of the component's model is carried by the read's `sources`,
- * not by this index.
+ * Every existence index keys on the component it tests. A content change names
+ * every component it touched, presence changes included, so its own component
+ * set is exact.
+ *
+ * A membership change carries no component list, so the journal's existence
+ * delta says whether the tested component arrived or left — a row entering or
+ * leaving a model, or an eviction. A delta omits a part nothing moved in, so a
+ * missing existence part means this component stayed; a membership change with
+ * no delta at all is the one shape that could have moved the whole component
+ * set unobserved, and answers `null`. Membership of the component's model is
+ * carried by the read's `sources` as well, which is what keeps a new row's
+ * arrival touching the read.
  */
 const existsSubjects = (change: ReplicaChange, index: string): readonly string[] | null => {
   const component = existsComponent(index);
-  if (component === null || change.kind !== "content") return [];
-  return change.components.includes(component) ? [component] : [];
+  if (component === null) return null;
+  if (change.kind === "content") {
+    return change.components.includes(component) ? [component] : [];
+  }
+  const existence = change.delta?.existence;
+  if (existence === undefined) return change.delta === undefined ? null : [];
+  return existence.added.includes(component) || existence.removed.includes(component)
+    ? [component]
+    : [];
 };
 
 export const existsIndexFamily: IndexFamily = {

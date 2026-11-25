@@ -375,10 +375,14 @@ cursor pagination is deferred.
 A relationship or existence predicate invalidates on the derived index key it
 reads: dispatch touches a subscription whose relation target changed, or whose
 component was written, instead of every subscription that reads the component.
-A link write still touches every reader of that relation — the journal names the
-component it touched, not the target an edge dropped — and a membership scope is
-declared as a `scope` index while the read set keeps `ebb/membership` broad
-until #962 narrows it.
+A link write touches the targets the journal's edge delta names under the
+index's relation plus the changed row, and a membership scope resolves to both
+groups a move names — the read set still keeps `ebb/membership` broad, so scope
+dispatch narrowing still waits on #962. Only a change whose shape cannot say
+what moved — a link write or a membership change with no delta — falls back to
+every reader of the index. A read that also projects the relation keeps
+`ebb/link` in its dispatch set, because a join projects the source row's edges,
+so that read still sees every link write.
 
 ## Seeding fixtures
 
