@@ -1,12 +1,13 @@
 /**
- * The derived-index names a query read declares and the keys a change resolves
- * to under them (#961).
+ * The registry of derived index families (#961, #1003).
  *
- * One module owns both directions because they must agree: a query lowers its
- * predicates and joins to {@link IndexDependency} keys, and the registry's
- * resolvers turn a change back into the keys it may have moved. A name that
- * only one side knew would silently widen dispatch to the component fallback,
- * so the encoders live here rather than as string literals in two modules.
+ * The relation, existence and scope query families each own both directions
+ * of their contract in one module: the indices a query read declares, and the
+ * keys a change resolves to under them. The membership index is a row
+ * subscription read with no query-side declaration, so it keeps its own
+ * module. This module is the single list that composes the declarations into
+ * {@link structuralReads} and registers the resolvers
+ * {@link createIndexResolvers} hands the dispatcher, so the two cannot drift.
  *
  * Every resolver answers from the row index #971 owns rather than from the
  * changed row's values. A change's journal entry names the components it
@@ -16,143 +17,42 @@
  * this narrowing existed. The failure mode is an extra touch, never a miss.
  */
 
-import { EBB_COMPONENTS, systemValueString, type Entity } from "@ebbjs/core";
-import type { Replica, ReplicaChange } from "@ebbjs/storage/replica";
+import type { Replica } from "@ebbjs/storage/replica";
 
-import type { IndexDependency, IndexResolver } from "./dependency-index";
+import type { IndexResolver } from "./dependency-index";
+import { existsIndexFamily } from "./exists-index";
+import type { IndexFamily } from "./index-family";
+import { MEMBERSHIP_INDEX, membershipResolver } from "./membership-index";
+import { relationIndexFamily } from "./relation-index";
+import { scopeIndexFamily } from "./scope-index";
 
-/** Row subscriptions: the member entity id a membership row files. */
-export const MEMBERSHIP_INDEX = "membership";
-
-/** Scope-aware reads: one dependency per group id whose membership the read follows. */
-export const SCOPE_INDEX = "scope";
-
-const RELATION_PREFIX = "relation:";
-const EXISTS_PREFIX = "exists:";
-
-/** A resolver registered under this key serves every `relation:` index name. */
-const RELATION_RESOLVER = `${RELATION_PREFIX}*`;
-
-/** A resolver registered under this key serves every `exists:` index name. */
-const EXISTS_RESOLVER = `${EXISTS_PREFIX}*`;
-
-/** `relation:<as>/<type>`, keyed by the target row id a read cares about. */
-export const relationIndex = (as: string, type: string): string =>
-  `${RELATION_PREFIX}${as}/${type}`;
-
-/** `exists:<component>`, keyed by the component whose presence a read tests. */
-export const existsIndex = (component: string): string => `${EXISTS_PREFIX}${component}`;
-
-/** The component an existence index name encodes, or `null` for another name. */
-const existsComponent = (index: string): string | null => {
-  if (!index.startsWith(EXISTS_PREFIX)) return null;
-  const component = index.slice(EXISTS_PREFIX.length);
-  return component.length === 0 ? null : component;
-};
-
-/** The dependency a relationship predicate or join adds for one target. */
-export const relationDependency = (
-  as: string,
-  type: string,
-  targetId: string,
-): IndexDependency => ({ index: relationIndex(as, type), key: targetId });
-
-/** The dependency an existence predicate adds for its component. */
-export const existsDependency = (component: string): IndexDependency => ({
-  index: existsIndex(component),
-  key: component,
-});
-
-/** The dependency a scope-aware read adds for one group. */
-export const scopeDependency = (groupId: string): IndexDependency => ({
-  index: SCOPE_INDEX,
-  key: groupId,
-});
-
-/** The group a changed row is filed under, read from its `ebb/membership` value. */
-const membershipGroupId = (row: Entity): string | null =>
-  systemValueString(row, "membership", "group_id");
+export { MEMBERSHIP_INDEX } from "./membership-index";
+export { relationIndex } from "./relation-index";
 
 /**
- * The member entity a membership row files, or `null` when the changed row is
- * not a membership row this index answers for.
+ * The query index families, in declaration order. A new derived index is one
+ * family module and one entry here: the read path composes the list, and the
+ * resolver registry serves every name the families declare.
  */
-const membershipSubject = (replica: Replica, change: ReplicaChange): string | null => {
-  // A membership row files a different row than the one it is, so the member
-  // is only reachable by reading the changed row — once per change, not once
-  // per subscription. A membership row arriving or leaving is a membership
-  // change that names no component, so the row itself says what it files.
-  if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.membership)) {
-    return null;
-  }
-  const changed = replica.get(change.id);
-  if (changed === undefined) return null;
-  const id = systemValueString(changed, "membership", "entity_id");
-  return id !== null && id.length > 0 ? id : null;
-};
-
-/**
- * A link write never names the targets it *dropped*: the journal carries the
- * components a write touched, and the row index holds only the edges that
- * exist after it. A read keyed on a removed target would therefore be missed
- * if the resolver guessed, so a link write answers `null` and dispatch falls
- * back to every reader of the relation — the breadth the `ebb/link` component
- * dependency had before this index existed.
- *
- * Every other change is precise. A membership change names the row, so a read
- * that joins it as a target follows it; a read that sources the relation from
- * that row follows the read's own `sources` model set. A content change to a
- * row is that row's id, which is the key of any read that follows it as a
- * joined target.
- */
-const relationSubjects = (change: ReplicaChange): readonly string[] | null =>
-  change.kind === "content" && change.components.includes(EBB_COMPONENTS.link) ? null : [change.id];
-
-/**
- * The group whose membership a change moved. An entering or refiled row names
- * its current group, so a scoped read of another group is left alone. A row
- * that left, or a membership value write, may have left a group the journal
- * does not name — and an evicted row is gone — so those answer `null` and
- * dispatch falls back to every scoped read.
- */
-const scopeSubjects =
-  (replica: Replica): IndexResolver =>
-  (change) => {
-    if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.membership)) {
-      return [];
-    }
-    if (change.kind === "content") return null;
-    const changed = replica.get(change.id);
-    if (changed === undefined) return null;
-    const groupId = membershipGroupId(changed);
-    if (groupId === null || groupId.length === 0) {
-      return change.membership === "left" ? null : [];
-    }
-    return [groupId];
-  };
+export const INDEX_FAMILIES: readonly IndexFamily[] = [
+  relationIndexFamily,
+  existsIndexFamily,
+  scopeIndexFamily,
+];
 
 /**
  * The resolvers the subscription registry and the benchmark register. The
- * `membership` resolver serves row subscriptions; the two namespace keys serve
- * every `relation:` and `exists:` name a query read declares, and `scope`
- * serves scope-aware reads.
+ * `membership` resolver serves row subscriptions; each query family answers
+ * under the names it declares.
  */
-export const createIndexResolvers = (
-  replica: Replica,
-): Readonly<Record<string, IndexResolver>> => ({
-  [MEMBERSHIP_INDEX]: (change) => {
-    const subject = membershipSubject(replica, change);
-    return subject === null ? [] : [subject];
-  },
-  [SCOPE_INDEX]: scopeSubjects(replica),
-  [RELATION_RESOLVER]: relationSubjects,
-  // Every existence index keys on the component it tests, so the resolver
-  // reads the component out of the index name and answers a content change
-  // that names it. Membership of the component's model is carried by the
-  // read's `sources`, not by this index.
-  [EXISTS_RESOLVER]: (change, index) => {
-    const component = existsComponent(index);
-    if (component === null || change.kind !== "content") return [];
-    return change.components.includes(component) ? [component] : [];
-  },
-});
+export const createIndexResolvers = (replica: Replica): Readonly<Record<string, IndexResolver>> => {
+  const resolvers: Record<string, IndexResolver> = {
+    [MEMBERSHIP_INDEX]: membershipResolver(replica),
+  };
+  for (const family of INDEX_FAMILIES) {
+    for (const name of family.names) {
+      resolvers[name] = family.resolver(replica);
+    }
+  }
+  return resolvers;
+};

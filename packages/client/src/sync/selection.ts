@@ -19,12 +19,8 @@ import type { TObject, TSchema } from "@sinclair/typebox/type";
 import { EntityValidationError } from "@ebbjs/schema";
 
 import type { IndexDependency } from "./dependency-index";
-import {
-  existsDependency,
-  relationDependency,
-  relationIndex,
-  scopeDependency,
-} from "./index-resolvers";
+import { composeDeclarations } from "./index-family";
+import { INDEX_FAMILIES } from "./index-resolvers";
 import { keyOf } from "./keys";
 import type { Query } from "./query";
 import { joinReadComponents, readComponentsFor } from "./query-plan";
@@ -160,105 +156,18 @@ export interface StructuralReads {
 const noStructuralReads: StructuralReads = { rows: [], indices: [], covered: [] };
 
 /**
- * The components a relationship read's index covers. An index is only a
- * narrower match key when the read named concrete targets; an `anyOf: null`
- * predicate matches nothing and a target-less join keeps its model component,
- * so neither replaces a component dependency.
- *
- * A forward one-cardinality join may rely on the predicate's keys because every
- * row that survives the group has its one edge under the pinned relation, and
- * that edge points at one of the group's targets. A many-cardinality join can
- * project a target outside the `anyOf` set, and a group that does not pin the
- * relation lets the join see any target, so in both cases the model component
- * stays the dispatch key.
- */
-const relationCovers = (
-  query: Query,
-  keyed: ReadonlyMap<string, { readonly keys: ReadonlySet<string> }>,
-): readonly string[] => {
-  const covered: string[] = [];
-  if (keyed.size === 0) return covered;
-  // Every relationship predicate or forward join reads its source's
-  // `ebb/link`; the index is keyed on the targets, which is what a link change
-  // resolves to (or falls back to).
-  covered.push(EBB_COMPONENTS.link);
-  for (const join of query.joins) {
-    if (join.kind !== "relationship" || join.direction !== "forward") continue;
-    if (join.cardinality !== "one") continue;
-    // A self-relation's target model is also the source model: covering it
-    // would drop the source's own projected components from dispatch.
-    if (join.target === query.source) continue;
-    if (!keyed.has(relationIndex(join.as, join.type))) continue;
-    const pinned = query.groups.every((group) =>
-      group.some(
-        (predicate) =>
-          predicate.kind === "relationship" &&
-          predicate.as === join.as &&
-          predicate.type === join.type,
-      ),
-    );
-    if (!pinned) continue;
-    // A forward join's targets are exactly an `as`/`type` predicate's any-of
-    // set, so the index answers a target row's change and the target model's
-    // whole-component dependency is no longer needed for dispatch.
-    for (const component of joinReadComponents(join)) covered.push(component);
-  }
-  return covered;
-};
-
-/**
  * The structural dependencies of a read. A create or delete names no component,
- * so the source model's row set is a dependency in its own right. A predicate
- * or forward join that reads a derived index names it too, so dispatch can
- * match the index key the change moved instead of the component it is filed
+ * so the source model's row set is a dependency in its own right. The derived
+ * index families declare what the read's predicates and joins read, so dispatch
+ * can match the index key a change moved instead of the component it is filed
  * under.
  */
 export const structuralReads = (query: Query): StructuralReads => {
   if (query.source === "") return noStructuralReads;
-  const indices: IndexDependency[] = [];
-  const covered: string[] = [];
-  /** `relation:<as>/<type>` → the relation and the target ids the read cares about. */
-  const relations = new Map<
-    string,
-    { readonly as: string; readonly type: string; readonly keys: Set<string> }
-  >();
-  const addRelation = (as: string, type: string, targets: readonly string[]): void => {
-    if (targets.length === 0) return;
-    const name = relationIndex(as, type);
-    const relation = relations.get(name) ?? { as, type, keys: new Set<string>() };
-    for (const target of targets) relation.keys.add(target);
-    relations.set(name, relation);
-  };
-
-  for (const group of query.groups) {
-    for (const predicate of group) {
-      if (predicate.kind === "relationship") {
-        addRelation(predicate.as, predicate.type, predicate.anyOf ?? []);
-      } else if (predicate.kind === "membership") {
-        for (const groupId of predicate.anyOf ?? []) indices.push(scopeDependency(groupId));
-      } else if (predicate.kind === "existence") {
-        indices.push(existsDependency(predicate.component));
-        covered.push(predicate.component);
-      }
-    }
-  }
-
-  for (const { as, type, keys } of relations.values()) {
-    for (const target of keys) indices.push(relationDependency(as, type, target));
-  }
-  covered.push(...relationCovers(query, relations));
-
-  // One predicate may appear in more than one OR group, and one index may be
-  // read by both a predicate and a join; the dispatcher buckets a dependency
-  // once, so drop the repeats here rather than re-adding them.
-  const seen = new Set<string>();
-  const unique = indices.filter(({ index, key }) => {
-    const name = `${index}\u0000${key}`;
-    if (seen.has(name)) return false;
-    seen.add(name);
-    return true;
-  });
-  return { rows: [query.source], indices: unique, covered: [...new Set(covered)] };
+  const { indices, covered } = composeDeclarations(
+    INDEX_FAMILIES.map((family) => family.declare(query)),
+  );
+  return { rows: [query.source], indices, covered };
 };
 
 /** The field keys a selection projects, or `null` for the whole row. */
