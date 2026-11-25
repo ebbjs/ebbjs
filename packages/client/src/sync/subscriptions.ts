@@ -17,7 +17,9 @@
  *
  * Dispatch is dependency-indexed (#938): the registry hands the change
  * dispatcher what each entry reads — its components and models, or the row it
- * watches plus the membership subject that files it — and the dispatcher hands
+ * watches plus the membership subject that files it — together with every
+ * derived-index key it declared or its consumer supplied through `depend`
+ * (#1007), merged and deduped into one key set per entry. The dispatcher hands
  * back only the entries a batch touches. A batch is matched by kind (#939): a
  * content change by the component it names, a membership change by the model
  * the row entered or left, which every reader of that model observes. What an
@@ -188,8 +190,20 @@ export interface SubscriptionWriter<TResult = unknown> {
    * behalf. A run that settles later seeks forward to the revision it produced.
    */
   hold(): void;
-  /** Hold exactly these values, releasing the ones dropped. */
-  depend(dependencies: readonly Dependency[]): void;
+  /**
+   * Hold exactly these values, releasing the ones dropped, and declare the
+   * derived-index keys the consumer derived for itself (#1007) — the
+   * membership rows a result holds, for a read whose keys come from its result
+   * rather than its query.
+   *
+   * `indices` absent means "no opinion": the keys already supplied stay in
+   * force, which is what a caller holding only a claim set — the patch path
+   * calling `depend(claims)` — relies on. `[]` withdraws them. Supplied keys
+   * are merged with the entry's declared ones and deduped by `(index, key)`;
+   * the dispatcher is handed the merged set, so adding or removing a key costs
+   * this entry's own re-index and nothing else.
+   */
+  depend(dependencies: readonly Dependency[], indices?: readonly IndexDependency[]): void;
 }
 
 /**
@@ -469,16 +483,63 @@ const compileReads = (
   return compileReadComponents([...components], sources);
 };
 
-/** What the dispatcher indexes for one entry: its reads, or the row it watches. */
+/** One key's identity under an index; the NUL cannot occur in a name or an id. */
+const indexIdentity = (dependency: IndexDependency): string =>
+  `${dependency.index}\u0000${dependency.key}`;
+
+/**
+ * The derived-index keys a list of declarations names, deduped by
+ * `(index, key)` in first-seen order. First-seen order gives the dispatcher one
+ * stable registration order; a key named twice is one key, so a consumer may
+ * hand over a list it built without deduping.
+ */
+const mergeIndices = (
+  ...sets: readonly (readonly IndexDependency[])[]
+): readonly IndexDependency[] => {
+  const seen = new Set<string>();
+  const merged: IndexDependency[] = [];
+  for (const set of sets) {
+    for (const dependency of set) {
+      const identity = indexIdentity(dependency);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      merged.push(dependency);
+    }
+  }
+  return merged;
+};
+
+/**
+ * Whether two key sets are the same, in any order: a consumer derives its keys
+ * from a result whose row order may change without the set of keys changing,
+ * and a reorder must not cost a re-index on the path that runs after every run.
+ * Both sides are deduped, so equal length plus one containment is equality.
+ */
+const sameIndices = (a: readonly IndexDependency[], b: readonly IndexDependency[]): boolean => {
+  if (a.length !== b.length) return false;
+  const seen = new Set(a.map(indexIdentity));
+  return b.every((dependency) => seen.has(indexIdentity(dependency)));
+};
+
+/**
+ * What the dispatcher indexes for one entry: its reads, or the row it watches,
+ * plus every derived-index key it declared — the query's own, the membership
+ * row a row entry is filed by, and the keys its consumer supplied, merged and
+ * deduped (#1007).
+ */
 const indexDependencies = (entry: {
   readonly kind: SubscriptionKind;
   readonly row: string | null;
   readonly reads: ReadSet;
-  readonly indices: readonly IndexDependency[];
+  readonly declaredIndices: readonly IndexDependency[];
+  readonly suppliedIndices: readonly IndexDependency[];
   readonly covered: readonly string[];
 }): SubscriptionDependencies => {
   if (entry.kind === "row" && entry.row !== null) {
-    return { rows: [entry.row], indices: [{ index: MEMBERSHIP_INDEX, key: entry.row }] };
+    return {
+      rows: [entry.row],
+      indices: mergeIndices([{ index: MEMBERSHIP_INDEX, key: entry.row }], entry.suppliedIndices),
+    };
   }
   // A component an index read subsumes stays in the read set (it is leased and
   // re-checked there) but not in the dispatch set: the resolver is the
@@ -495,7 +556,7 @@ const indexDependencies = (entry: {
     components: [...entry.reads.components].filter((component) => !isCovered(component)),
     models: [...entry.reads.models].filter((model) => !covered.has(`${model}/*`)),
     sources: [...entry.reads.sources],
-    indices: entry.indices,
+    indices: mergeIndices(entry.declaredIndices, entry.suppliedIndices),
   };
 };
 
@@ -510,8 +571,14 @@ interface Entry<TResult, TConsumer = unknown> {
   readonly declaredReads: readonly string[];
   /** Models whose row set a query read observes; empty for a row read. */
   readonly declaredSources: readonly string[];
-  /** Derived-index reads a query declared; empty for a row read. */
-  readonly indices: readonly IndexDependency[];
+  /** Derived-index reads the query declared; empty for a row read. */
+  readonly declaredIndices: readonly IndexDependency[];
+  /**
+   * Derived-index keys the consumer derived from its current result (#1007).
+   * Merged with the declared ones for dispatch, and replaced wholesale on
+   * every `depend` that states them; `[]` means the consumer has none.
+   */
+  suppliedIndices: readonly IndexDependency[];
   /** Components the declared indices replace as the dispatcher's match key. */
   readonly covered: readonly string[];
   /** The components a row read selected; absent claims every resident one. */
@@ -796,7 +863,11 @@ export const createSubscriptionRegistry = (
     for (const release of previous) release();
   };
 
-  const depend = <TResult>(entry: Entry<TResult>, dependencies: readonly Dependency[]): void => {
+  const depend = <TResult>(
+    entry: Entry<TResult>,
+    dependencies: readonly Dependency[],
+    indices?: readonly IndexDependency[],
+  ): void => {
     // An inactive result may still be settling a run it started while mounted;
     // its claims follow the result it holds until the result ends. The list is
     // the claim set of the result the entry still publishes, not a live
@@ -807,7 +878,23 @@ export const createSubscriptionRegistry = (
     // done for nobody while the entry is inactive.
     if (entry.state === "terminal") return;
     const next = mergeComponents(dependencies);
-    if (sameDependencies(entry.dependencies, next)) return;
+    // Absent keys are not a declaration of none: a caller handing only claims
+    // keeps the keys it supplied before, while `[]` is how it withdraws them.
+    const nextIndices = indices === undefined ? entry.suppliedIndices : mergeIndices(indices);
+    // Keys get their own check rather than joining `sameDependencies`: claims
+    // and keys move independently. A claim move re-leases, recompiles the read
+    // set, and restarts the watchdog's quiet period; a key move only re-indexes
+    // this one entry. Folding the key into the claim check would re-lease for a
+    // key-only change and bump the generation of an acquire that has not
+    // resolved yet.
+    const claimsMoved = !sameDependencies(entry.dependencies, next);
+    const keysMoved = !sameIndices(entry.suppliedIndices, nextIndices);
+    if (!claimsMoved && !keysMoved) return;
+    if (keysMoved) entry.suppliedIndices = nextIndices;
+    if (!claimsMoved) {
+      dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      return;
+    }
     entry.dependencies = next;
     // A claim set that moved proves this reader is working: its quiet period
     // restarts and a report already made for the old set no longer applies.
@@ -817,8 +904,9 @@ export const createSubscriptionRegistry = (
     entry.generation += 1;
     // A query entry is indexed by the components it reads, so a claim that
     // added components re-indexes it in the same step. A row entry's record
-    // names only its row, so a new claim cannot move it.
-    if (entry.kind === "query") {
+    // names only its row and the keys it supplied, so a new claim cannot move
+    // it — only a key-set move does.
+    if (entry.kind === "query" || keysMoved) {
       dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
     }
     void acquire(entry as unknown as Entry<unknown>, next, entry.generation);
@@ -890,8 +978,8 @@ export const createSubscriptionRegistry = (
     hold: () => {
       entry.declared = true;
     },
-    depend: (dependencies: readonly Dependency[]) => {
-      depend(entry, dependencies);
+    depend: (dependencies: readonly Dependency[], indices?: readonly IndexDependency[]) => {
+      depend(entry, dependencies, indices);
     },
   });
 
@@ -1005,8 +1093,8 @@ export const createSubscriptionRegistry = (
       hold: () => {
         entry.declared = true;
       },
-      depend: (dependencies: readonly Dependency[]) => {
-        depend(entry, dependencies);
+      depend: (dependencies: readonly Dependency[], indices?: readonly IndexDependency[]) => {
+        depend(entry, dependencies, indices);
       },
       onChange: (listener: ChangeListener<TResult>) => {
         if (!writable()) return () => {};
@@ -1059,7 +1147,8 @@ export const createSubscriptionRegistry = (
         mapKey,
         declaredReads: declaredReads(spec),
         declaredSources: declaredSources(spec),
-        indices: spec.kind === "query" ? (spec.indices ?? []) : [],
+        declaredIndices: spec.kind === "query" ? (spec.indices ?? []) : [],
+        suppliedIndices: [],
         covered: spec.kind === "query" ? (spec.covered ?? []) : [],
         rowComponents: spec.kind === "row" ? spec.components : undefined,
         consumer: consumer as TConsumer,

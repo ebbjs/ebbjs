@@ -726,6 +726,232 @@ describe("subscription registry: indexed dispatch (#938)", () => {
   });
 });
 
+/**
+ * Derived-index keys a consumer supplies through `depend` (#1007).
+ *
+ * A result learns some of its keys from the rows it holds rather than from its
+ * query — the membership row each projected row is filed by — so the consumer
+ * hands them over with its claims. The registry merges them with the entry's
+ * declared keys, dedupes by `(index, key)`, and re-indexes that one entry, so
+ * dispatch follows a key set that moved without a rebuild or a re-run.
+ */
+describe("subscription registry: consumer-supplied index keys (#1007)", () => {
+  type Registry = ReturnType<typeof createSubscriptionRegistry>;
+
+  /** File `entityId` under one group: the membership row a projected row carries. */
+  const file = (
+    replica: Replica,
+    membershipId: string,
+    entityId: string,
+    groupId: string,
+    gsn: number,
+  ): Revision =>
+    replica.ingest(
+      { id: `a_${gsn}`, actor_id: "actor_1", hlc: makeHlc(gsn), gsn, updates: [] },
+      platformUpdate(membershipId, "membership", "put", {
+        entity_id: entityId,
+        group_id: groupId,
+      }),
+      gsn,
+    );
+
+  /** A query entry that declares no read of its own, only the keys it is handed. */
+  const indexed = (registry: Registry, key: string, members: readonly string[]) => {
+    const entry = registry.open({ kind: "query", key, reads: [] });
+    entry.depend(
+      [],
+      members.map((member) => ({ index: "membership", key: member })),
+    );
+    return entry;
+  };
+
+  it("touches the entry whose membership key a change names, not a peer", () => {
+    const { replica, subscriptions } = harness();
+    const held = indexed(subscriptions, "held", ["doc_1"]);
+    const peer = indexed(subscriptions, "peer", ["doc_2"]);
+    const seen: string[] = [];
+    held.onChange(() => seen.push("held"));
+    peer.onChange(() => seen.push("peer"));
+
+    // The membership row files doc_1, which exactly one of the two entries
+    // holds. The counters say it was found by lookup: a scan of every entry —
+    // what the batch would otherwise cost — is the `scanWork` number, and one
+    // of the two entries is touched.
+    file(replica, "eg_1", "doc_1", "grp_1", 2);
+    expect(seen).toEqual(["held"]);
+    expect(subscriptions.stats().dispatch).toEqual({ touched: 1, lookups: 3, scanWork: 2 });
+
+    // A membership row filing another entity names no key either entry holds,
+    // so the batch costs its lookups and touches nothing.
+    seen.length = 0;
+    file(replica, "eg_9", "doc_9", "grp_1", 3);
+    expect(seen).toEqual([]);
+    expect(subscriptions.stats().dispatch).toEqual({ touched: 0, lookups: 3, scanWork: 2 });
+  });
+
+  it("adds a key, keeps it through a claims-only call, and drops it", () => {
+    const { replica, subscriptions } = harness();
+    const held = subscriptions.open({ kind: "query", key: "held", reads: [] });
+    const peer = subscriptions.open({ kind: "query", key: "peer", reads: [] });
+    const seen: string[] = [];
+    held.onChange(() => seen.push("held"));
+    peer.onChange(() => seen.push("peer"));
+    const claims = [{ id: "doc_1", components: ["document/title"] }];
+
+    // Nothing names doc_1 yet, so the change is nobody's concern: no lookup
+    // finds a holder, and the set of entries the batch would have scanned is
+    // the one dispatch avoided. Nothing declared the index yet, so its lookup
+    // is not even paid.
+    file(replica, "eg_1", "doc_1", "grp_1", 2);
+    expect(seen).toEqual([]);
+    expect(subscriptions.stats().dispatch).toEqual({ touched: 0, lookups: 2, scanWork: 2 });
+
+    // Adding the key re-indexes this one entry, and the next batch finds it.
+    held.depend(claims, [{ index: "membership", key: "doc_1" }]);
+    file(replica, "eg_2", "doc_1", "grp_2", 3);
+    expect(seen).toEqual(["held"]);
+    expect(subscriptions.stats().dispatch).toEqual({ touched: 1, lookups: 3, scanWork: 2 });
+
+    // A call that hands only claims states no opinion about keys, so the key
+    // stays in force — the patch path calls `depend(dependencies)`.
+    held.depend(claims);
+    file(replica, "eg_3", "doc_1", "grp_3", 4);
+    expect(seen).toEqual(["held", "held"]);
+
+    // `[]` is how a consumer withdraws them, and the next batch is nobody's.
+    held.depend(claims, []);
+    file(replica, "eg_4", "doc_1", "grp_4", 5);
+    expect(seen).toEqual(["held", "held"]);
+    expect(subscriptions.stats().dispatch).toEqual({ touched: 0, lookups: 2, scanWork: 2 });
+  });
+
+  it("re-indexes a key-only change without re-leasing", async () => {
+    const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+    await replica.read("doc_1", [LAZY]);
+    const held = subscriptions.open({ kind: "query", key: "held", reads: ["document/title"] });
+    held.depend([{ id: "doc_1", components: [LAZY] }]);
+    await flushTasks();
+    const leases = replica.stats().leases;
+    const result = { rows: ["doc_1"] };
+    held.publish(result);
+    const reflected = held.reflected;
+    const seen: string[] = [];
+    held.onChange(() => seen.push("held"));
+    const acquire = vi.spyOn(replica, "acquire");
+
+    held.depend(held.dependencies, [{ index: "membership", key: "doc_1" }]);
+    await flushTasks();
+
+    // Claims did not move, so nothing was acquired, no claim was released, and
+    // the entry's lease bookkeeping is what it was: a key-only call is a
+    // re-index, never a re-lease.
+    expect(acquire).not.toHaveBeenCalled();
+    expect(replica.stats().leases).toEqual(leases);
+    expect(held.dependencies).toEqual([{ id: "doc_1", components: [LAZY] }]);
+    acquire.mockRestore();
+
+    // A change that names no key the entry holds stays out of it entirely: the
+    // result and the revision it reflects are untouched.
+    file(replica, "eg_9", "doc_9", "grp_1", 2);
+    expect(seen).toEqual([]);
+    expect(held.result).toBe(result);
+    expect(held.reflected).toBe(reflected);
+
+    // The key the entry added does reach it, and reaches only its dispatch: the
+    // listener runs, while the result and the claims it was published with stay
+    // exactly as they were.
+    file(replica, "eg_1", "doc_1", "grp_1", 3);
+    expect(seen).toEqual(["held"]);
+    expect(held.result).toBe(result);
+    expect(held.dependencies).toEqual([{ id: "doc_1", components: [LAZY] }]);
+    expect(replica.stats().leases).toEqual(leases);
+  });
+
+  it("keeps an in-flight acquire when only the key set moves", async () => {
+    let unblock: () => void = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const rows: Record<string, Entity> = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({
+      readComponent: async (id) => {
+        await blocked;
+        return rows[id] ?? null;
+      },
+    });
+    seed(replica);
+    const subscriptions = createSubscriptionRegistry(replica);
+    const held = subscriptions.open({ kind: "query", key: "held", reads: [] });
+    const seen: string[] = [];
+    held.onChange(() => seen.push("held"));
+    held.depend([{ id: "doc_1", components: [LAZY] }]);
+
+    // The claim is still resolving when the key set moves. A key-only call must
+    // not move the generation the acquire started with, or the claim it is
+    // about to take would be dropped on arrival.
+    held.depend(held.dependencies, [{ index: "membership", key: "doc_1" }]);
+    unblock();
+    await flushTasks();
+
+    expect(replica.stats().leases).toMatchObject({ leased: 1 });
+    expect(held.dependencies).toEqual([{ id: "doc_1", components: [LAZY] }]);
+
+    // The key did move: the membership row filing doc_1 reaches the entry
+    // through the index while it keeps the claim the acquire took.
+    file(replica, "eg_1", "doc_1", "grp_1", 2);
+    expect(seen).toEqual(["held"]);
+    expect(replica.stats().leases).toMatchObject({ leased: 1 });
+    held.release();
+  });
+
+  it("re-indexes an inactive result whose run supplies keys after its last release", async () => {
+    const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+    const held = subscriptions.open({ kind: "query", key: "held", reads: [] });
+    const seen: string[] = [];
+    held.onChange(() => seen.push("held"));
+    held.publish({ data: [] });
+    held.release();
+    expect(held.state).toBe("inactive");
+
+    // The run still in flight when the last subscriber left settles and
+    // declares the keys it derived from its result. An inactive result keeps
+    // its claims and is still dispatched, so its keys have to reach the index
+    // too, or a remount inside the TTL would serve a result it believes current.
+    held.depend([], [{ index: "membership", key: "doc_1" }]);
+    file(replica, "eg_1", "doc_1", "grp_1", 2);
+
+    expect(seen).toEqual(["held"]);
+    expect(subscriptions.peek("query", "held")?.state).toBe("inactive");
+  });
+
+  it("leaves a row subscription on its own row and its membership row", async () => {
+    const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+    await replica.read("doc_1", [LAZY]);
+    const row = subscriptions.open({ kind: "row", row: "doc_1" });
+    await flushTasks();
+    const seen: string[] = [];
+    row.onChange(() => seen.push("row"));
+
+    // The row's own content, then the membership row that files it.
+    writeTitle(replica, "Renamed", 2);
+    expect(seen).toEqual(["row"]);
+    file(replica, "eg_1", "doc_1", "grp_1", 3);
+    expect(seen).toEqual(["row", "row"]);
+
+    // A claims-only `depend` still re-leases the row's components.
+    const acquire = vi.spyOn(replica, "acquire");
+    row.depend([{ id: "doc_1", components: ["document/title"] }]);
+    await flushTasks();
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 1 });
+    acquire.mockRestore();
+
+    // And the row's own membership key is still what dispatch matches on.
+    file(replica, "eg_2", "doc_1", "grp_2", 4);
+    expect(seen).toEqual(["row", "row", "row"]);
+  });
+});
+
 describe("subscription registry at the client seam", () => {
   const note = defineModel("note", {
     title: e.string(),
@@ -966,6 +1192,29 @@ describe("subscription registry: the lease watchdog (#944)", () => {
     expect(warn).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(HORIZON_MS);
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not restart the quiet period for a key-set change alone", async () => {
+    vi.useFakeTimers();
+    const { replica, live, warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS - 1);
+    // Keys moved, claims did not: the entry is still working on the same claim
+    // set, so the quiet period it was already in is the one that is reported.
+    live.depend(live.dependencies, [{ index: "membership", key: "doc_9" }]);
+    vi.advanceTimersByTime(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // The key really did move. A row entry matches only its own row otherwise,
+    // so a supplied key that never reached dispatch would touch nothing here.
+    const seen: string[] = [];
+    live.onChange(() => seen.push("doc_9"));
+    replica.ingest(
+      { id: "a_2", actor_id: "actor_1", hlc: makeHlc(2), gsn: 2, updates: [] },
+      platformUpdate("eg_9", "membership", "put", { entity_id: "doc_9", group_id: "grp_1" }),
+      2,
+    );
+    expect(seen).toEqual(["doc_9"]);
   });
 
   it("does not warn about a released subscription or an inactive result", async () => {
