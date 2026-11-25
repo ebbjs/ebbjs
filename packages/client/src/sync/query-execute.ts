@@ -34,7 +34,7 @@ import {
   type PlanPredicate,
 } from "./query-plan";
 import { componentRowView } from "./system-row";
-import { recordResultRows } from "./traversal-counter";
+import { recordPlanRun, recordResultRows } from "./traversal-counter";
 
 /**
  * The read seam a plan executes against: a whole-type scan, a by-id
@@ -357,6 +357,7 @@ export function executePlan(
   executor: PlanExecutor,
   resolveField: FieldResolver = fieldValue,
 ): readonly Entity[] {
+  recordPlanRun();
   let sourceModel = "";
   let scanRows: readonly Entity[] | null = null;
   const scanned = (): readonly Entity[] =>

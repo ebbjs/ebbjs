@@ -383,7 +383,7 @@ export interface QueryContext {
  */
 interface ResultEngine {
   readonly context: QueryContext;
-  readonly syncRun: (query: Query) => readonly unknown[] | null;
+  readonly runPage: (query: Query) => readonly unknown[] | Promise<readonly unknown[]>;
 }
 
 /** Loader for the candidate entity list. Resolved lazily on each materialization. */
@@ -692,27 +692,20 @@ export function buildReplicaQueryBuilder<
   const resolveField: FieldResolver = (entity, field) =>
     projectedFieldValue(entity, field, shape, context.migrations);
   /**
-   * Project the page synchronously when the replica already holds everything
-   * it reads. `null` means a component must be acquired first, which only the
-   * async run does.
-   *
-   * The check runs the whole narrowing plan, and the async path then runs it
-   * again to acquire and project the same page. That is deliberate for now:
-   * only the narrowed page answers whether a row needs acquisition, so it has
-   * to be planned before the answer exists. A cold read of a large projection
-   * therefore pays the plan twice; #962 owns that cost.
+   * One plan run per read. A resident page projects synchronously from it; a
+   * page that needs a component hands the rows it narrowed to acquisition,
+   * which is the same page a second plan would recompute.
    */
-  const syncRun = (query: Query): readonly unknown[] | null => {
+  const runPage = (query: Query): readonly unknown[] | Promise<readonly unknown[]> => {
     const executor = replicaExecutorFor(context, view);
-    const rows = executePlan(planQuery(query), executor, resolveField);
-    if (pageNeedsAcquisition(rows, query, executor, context)) return null;
-    // Narrowing reads index rows. A projection reads the composed row, whose
-    // value cache may hold what the index deliberately does not.
-    const page = rows.map((row) => executor.get(row.id) ?? row);
-    return projectResultRows(page, query, executor, context, projectBase);
+    const page: QueryRun = {
+      rows: executePlan(planQuery(query), executor, resolveField),
+      executor,
+    };
+    return pageNeedsAcquisition(page.rows, query, executor, context)
+      ? projectAcquiring(page, query, context, projectBase)
+      : projectResident(page, query, context, projectBase);
   };
-  const asyncRun = (query: Query): Promise<readonly unknown[]> =>
-    runProjected(query, replicaExecutor(context, view), context, resolveField, projectBase);
   const patchRun = (query: Query): ((ids: readonly string[]) => readonly unknown[] | null) =>
     patchProjection(query, context, view, projectBase);
   // A value view resolves every field to its one platform component.
@@ -725,8 +718,7 @@ export function buildReplicaQueryBuilder<
     replicaExecutor(context, view),
     projectBase,
     componentFor,
-    syncRun,
-    asyncRun,
+    runPage,
     patchRun,
   );
 }
@@ -895,27 +887,46 @@ const acquirePage = async (
 };
 
 /**
- * Run the narrowing plan, acquire the page's projection, project, and release.
- * The projection owns its values, so releasing after it is safe.
+ * Project a planned page from what the replica holds. Narrowing reads index
+ * rows; a projection reads the composed row, whose value cache may hold what
+ * the index deliberately does not.
  */
+const projectResident = <TRow extends { readonly id: string }>(
+  page: QueryRun,
+  query: Query,
+  context: QueryContext | undefined,
+  projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
+): readonly unknown[] => {
+  const rows = page.rows.map((row) => page.executor.get(row.id) ?? row);
+  return projectResultRows(rows, query, page.executor, context, projectBase);
+};
+
+/**
+ * Acquire the page's projection, project, and release. The projection owns its
+ * values, so releasing after it is safe.
+ */
+const projectAcquiring = async <TRow extends { readonly id: string }>(
+  page: QueryRun,
+  query: Query,
+  context: QueryContext | undefined,
+  projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
+): Promise<readonly unknown[]> => {
+  const release = await acquirePage(page.rows, query, page.executor, context);
+  try {
+    return projectResident(page, query, context, projectBase);
+  } finally {
+    release();
+  }
+};
+
 const runProjected = async <TRow extends { readonly id: string }>(
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
   context: QueryContext | undefined,
   resolveField: FieldResolver,
   projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
-): Promise<readonly unknown[]> => {
-  const run = await runPlan(query, loadExecutor, resolveField);
-  const release = await acquirePage(run.rows, query, run.executor, context);
-  try {
-    // Acquiring installs a component by replacing the row, so project the
-    // page's current rows rather than the pre-acquisition references.
-    const rows = run.rows.map((row) => run.executor.get(row.id) ?? row);
-    return projectResultRows(rows, query, run.executor, context, projectBase);
-  } finally {
-    release();
-  }
-};
+): Promise<readonly unknown[]> =>
+  projectAcquiring(await runPlan(query, loadExecutor, resolveField), query, context, projectBase);
 
 /**
  * The group ids a projected query row carries, read from the replica's
@@ -1070,9 +1081,10 @@ const buildJoins = (
 
 /**
  * The single chain implementation. Each mutator returns a new builder
- * carrying the next {@link Query}; the original is untouched. Terminals
- * all funnel through {@link runPlan}, so a replica chain and a candidate
- * chain differ only in where the executor comes from.
+ * carrying the next {@link Query}; the original is untouched. Awaiting a
+ * chain funnels through {@link runPlan}, so a replica chain and a candidate
+ * chain differ only in where the executor comes from; a mounted replica result
+ * runs its plan once through the engine binding instead.
  */
 function buildChain<
   TFields extends Record<string, TSchema>,
@@ -1086,8 +1098,7 @@ function buildChain<
   loadExecutor: () => Promise<PlanExecutor>,
   projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
   componentFor: ComponentFor,
-  syncRun?: (query: Query) => readonly unknown[] | null,
-  asyncRun?: (query: Query) => Promise<readonly unknown[]>,
+  runPage?: (query: Query) => readonly unknown[] | Promise<readonly unknown[]>,
   patchRun?: (query: Query) => (ids: readonly string[]) => readonly unknown[] | null,
 ): QueryBuilder<TFields, TJoins, TJoined, TRow> {
   // Ordering reads the field as projection does, so a defaulted field sorts
@@ -1106,13 +1117,10 @@ function buildChain<
       // never flashes `stale`. One that must acquire a component or a join
       // target returns the pending run, which the results view publishes as `stale`
       // until it settles.
-      execute: () => {
-        const rows = engine.syncRun(query);
-        if (rows !== null || asyncRun === undefined) {
-          return rows as readonly JoinedRow<TFields, TJoined, TRow>[];
-        }
-        return asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>;
-      },
+      execute: () =>
+        engine.runPage(query) as
+          | readonly JoinedRow<TFields, TJoined, TRow>[]
+          | Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>,
       // A change that only rewrites a projected value re-projects these rows
       // instead of re-running the plan (#942).
       patch:
@@ -1189,22 +1197,22 @@ function buildChain<
       return executeQuery(query, loadExecutor, resolveOrderField);
     },
     subscribe(listener) {
-      if (context === undefined || syncRun === undefined) {
+      if (context === undefined || runPage === undefined) {
         throw new Error(
           "subscribe(): a chain over already-materialized rows has no engine binding for a change event; await the chain to re-read",
         );
       }
       // A listener never fires on subscribe itself: the first run primes the
       // store silently, later result changes wake the listener.
-      return resultFor(query, { context, syncRun }).subscribe(listener, { initial: false });
+      return resultFor(query, { context, runPage }).subscribe(listener, { initial: false });
     },
     result() {
-      if (context === undefined || syncRun === undefined) {
+      if (context === undefined || runPage === undefined) {
         throw new Error(
           "result(): a chain over already-materialized rows has no engine store; await the chain to read it",
         );
       }
-      return resultFor(query, { context, syncRun });
+      return resultFor(query, { context, runPage });
     },
     // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
     then(onfulfilled, onrejected) {
