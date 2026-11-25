@@ -85,7 +85,7 @@ export const componentIds = (index: ComponentIndex, component: string): readonly
 
 /**
  * The existence change a row's previous→next component sets imply. The replica
- * derives presence from both the held values and the components it knows exist
+ * derives existence from both the held values and the components it knows exist
  * without holding (#802), so it cannot use {@link componentDelta} over rows
  * alone.
  */
