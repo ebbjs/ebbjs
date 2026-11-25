@@ -1171,6 +1171,7 @@ describe("replica: evict (#499)", () => {
         delta: {
           existence: { added: [], removed: ["ebb/membership"] },
           groups: { before: ["grp_1"], after: [] },
+          membership: { before: "e_1", after: null },
         },
       },
     ]);

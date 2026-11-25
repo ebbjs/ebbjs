@@ -91,11 +91,27 @@ const groupDelta = (before: Entity | null, after: Entity | null): ChangeDelta["g
   return { before: previous, after: next };
 };
 
+/** The member entity a row files, or none when it files nobody on this side. */
+const subjectOf = (row: Entity | null): string | null => {
+  const filed = sourceRow(row);
+  if (filed === null) return null;
+  const entityId = systemValueString(filed, "membership", "entity_id");
+  return entityId === null || entityId.length === 0 ? null : entityId;
+};
+
+/** The member a change moved a membership row between, naming the side it filed. */
+const subjectDelta = (before: Entity | null, after: Entity | null): ChangeDelta["membership"] => {
+  const previous = subjectOf(before);
+  const next = subjectOf(after);
+  return previous === next ? undefined : { before: previous, after: next };
+};
+
 /**
  * What a change moved in the index: the edges, component existence and
- * membership groups on both sides. Only a write that still holds the old state
- * can answer this, which is why the journal records it rather than a reader
- * deriving it from the row. `undefined` when nothing moved.
+ * membership groups on both sides, and the member a membership row filed.
+ * Only a write that still holds the old state can answer this, which is why
+ * the journal records it rather than a reader deriving it from the row.
+ * `undefined` when nothing moved.
  */
 export const changeDeltaOf = (
   id: string,
@@ -105,14 +121,23 @@ export const changeDeltaOf = (
   const edges = edgeDelta(before.row, after.row);
   const existence = existenceDelta(id, before.components, after.components);
   const groups = groupDelta(before.row, after.row);
-  if (edges === undefined && existence === undefined && groups === undefined) return undefined;
+  const membership = subjectDelta(before.row, after.row);
+  if (
+    edges === undefined &&
+    existence === undefined &&
+    groups === undefined &&
+    membership === undefined
+  )
+    return undefined;
   const delta: {
     edges?: ChangeDelta["edges"];
     existence?: ChangeDelta["existence"];
     groups?: ChangeDelta["groups"];
+    membership?: ChangeDelta["membership"];
   } = {};
   if (edges !== undefined) delta.edges = edges;
   if (existence !== undefined) delta.existence = existence;
   if (groups !== undefined) delta.groups = groups;
+  if (membership !== undefined) delta.membership = membership;
   return delta;
 };
