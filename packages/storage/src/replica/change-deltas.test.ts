@@ -15,7 +15,7 @@ import type { Replica } from "./types";
 
 /**
  * Fixtures for the journal's index delta: the edges, component existence and
- * membership groups a change moved, which the post-change row cannot show.
+ * membership pair a change moved, which the post-change row cannot show.
  */
 
 const leaf = (value: unknown, updateId: string, ms: number): FieldValue => ({
@@ -364,7 +364,7 @@ describe("replica: change delta (#1004)", () => {
     ]);
   });
 
-  it("names both groups when a membership row moves", () => {
+  it("names both sides when a membership row moves a group", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
     ingest(
@@ -391,12 +391,17 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
-        delta: { groups: { before: ["g1"], after: ["g2"] } },
+        delta: {
+          membership: {
+            before: { entityId: "e_1", groupId: "g1" },
+            after: { entityId: "e_1", groupId: "g2" },
+          },
+        },
       },
     ]);
   });
 
-  it("names the subject a membership row arrives with", () => {
+  it("names the pair a membership row arrives with", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
 
@@ -410,14 +415,16 @@ describe("replica: change delta (#1004)", () => {
         models: ["ebb"],
         delta: {
           existence: { added: ["ebb/membership"], removed: [] },
-          groups: { before: [], after: ["g1"] },
-          membership: { before: null, after: "e_1" },
+          membership: {
+            before: null,
+            after: { entityId: "e_1", groupId: "g1" },
+          },
         },
       },
     ]);
   });
 
-  it("names both subjects when a membership row is refiled onto another entity", () => {
+  it("names both pairs when a membership row is refiled onto another entity", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
     ingest(
@@ -436,8 +443,8 @@ describe("replica: change delta (#1004)", () => {
       2,
     );
 
-    // The group stayed; the entity the row files moved, and the subject names
-    // both sides the way a group move names both groups.
+    // The group stayed; the entity the row files moved, so the pair names both
+    // sides the way a group move names both groups.
     expect(replica.changesSince(1)).toStrictEqual([
       {
         revision: 2,
@@ -445,12 +452,17 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
-        delta: { membership: { before: "e_1", after: "e_2" } },
+        delta: {
+          membership: {
+            before: { entityId: "e_1", groupId: "g1" },
+            after: { entityId: "e_2", groupId: "g1" },
+          },
+        },
       },
     ]);
   });
 
-  it("leaves the subject out of a membership value write that keeps it", () => {
+  it("carries no delta for a membership value write that keeps the pair", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
     ingest(
@@ -463,14 +475,15 @@ describe("replica: change delta (#1004)", () => {
         gsn: 2,
         ms: 20,
         fields: {
-          membership: leaf({ entity_id: "e_1", group_id: "g2" }, "u_m_1_2", 20),
+          membership: leaf({ entity_id: "e_1", group_id: "g1" }, "u_m_1_2", 20),
         },
       }),
       2,
     );
 
-    // The group moved; the entity the row files did not, so only the group is
-    // recorded.
+    // Neither the member nor the group moved: the value write carries no delta
+    // at all, which is what lets the membership resolver tell "no filing moved"
+    // from "the journal cannot say".
     expect(replica.changesSince(1)).toStrictEqual([
       {
         revision: 2,
@@ -478,12 +491,48 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
-        delta: { groups: { before: ["g1"], after: ["g2"] } },
       },
     ]);
   });
 
-  it("names the subject an unshared membership row filed", () => {
+  it("names the pair a membership component leaves behind", () => {
+    const replica = createReplica();
+    ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
+    ingest(
+      replica,
+      drop({
+        actionId: "a_2",
+        updateId: "u_2",
+        entityId: "m_1",
+        model: "ebb",
+        gsn: 2,
+        ms: 20,
+        fields: ["membership"],
+      }),
+      2,
+    );
+
+    // The row stays and its membership value does not: the pair it stated is
+    // only in the journal now.
+    expect(replica.changesSince(1)).toStrictEqual([
+      {
+        revision: 2,
+        id: "m_1",
+        kind: "content",
+        deleted: false,
+        components: ["ebb/membership"],
+        delta: {
+          existence: { added: [], removed: ["ebb/membership"] },
+          membership: {
+            before: { entityId: "e_1", groupId: "g1" },
+            after: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("names the pair an unshared membership row filed", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
 
@@ -498,14 +547,16 @@ describe("replica: change delta (#1004)", () => {
         membership: "left",
         models: ["ebb"],
         delta: {
-          groups: { before: ["g1"], after: [] },
-          membership: { before: "e_1", after: null },
+          membership: {
+            before: { entityId: "e_1", groupId: "g1" },
+            after: null,
+          },
         },
       },
     ]);
   });
 
-  it("carries no subject for a row that files none", () => {
+  it("carries no membership for a row that files none", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -533,7 +584,7 @@ describe("replica: change delta (#1004)", () => {
     ]);
   });
 
-  it("names the group an evicted row left", () => {
+  it("names the pair an evicted row left", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
 
@@ -549,9 +600,104 @@ describe("replica: change delta (#1004)", () => {
         models: ["ebb"],
         delta: {
           existence: { added: [], removed: ["ebb/membership"] },
-          groups: { before: ["g1"], after: [] },
-          membership: { before: "e_1", after: null },
+          membership: {
+            before: { entityId: "e_1", groupId: "g1" },
+            after: null,
+          },
         },
+      },
+    ]);
+  });
+
+  it("carries no delta for a component-less row's arrival", () => {
+    const replica = createReplica();
+
+    // An `ebb` row with no component moves into the row set carrying nothing.
+    // The journal records the entry and no delta at all, so a reader that keys
+    // on a filed subject cannot conclude "nothing filed moved" from it.
+    ingest(
+      replica,
+      {
+        id: "a_1",
+        actor_id: "user_1",
+        hlc: makeHlc(10),
+        gsn: 1,
+        updates: [
+          {
+            id: "u_1",
+            subject_id: "m_bare",
+            model: "ebb",
+            method: "create",
+            hlc: makeHlc(10),
+            data: null,
+          },
+        ],
+      },
+      1,
+    );
+
+    expect(replica.changesSince(0)).toStrictEqual([
+      {
+        revision: 1,
+        id: "m_bare",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["ebb"],
+      },
+    ]);
+  });
+
+  it("records no pair for a membership value that states half of one", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_m_1",
+        entityId: "m_1",
+        model: "ebb",
+        ms: 10,
+        fields: { membership: leaf({ entity_id: "e_1" }, "u_m_1", 10) },
+      }),
+      1,
+    );
+    ingest(
+      replica,
+      put({
+        actionId: "a_2",
+        updateId: "u_m_2",
+        entityId: "m_2",
+        model: "ebb",
+        gsn: 2,
+        ms: 20,
+        fields: { membership: leaf({ group_id: "g1" }, "u_m_2", 20) },
+      }),
+      2,
+    );
+
+    // A value with only one half files no membership a resolver can key on, so
+    // neither side of the pair is recorded. Falling back is the safe direction:
+    // a reader then falls back to every entry rather than to a key nothing
+    // declares.
+    expect(replica.changesSince(0)).toStrictEqual([
+      {
+        revision: 1,
+        id: "m_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["ebb"],
+        delta: { existence: { added: ["ebb/membership"], removed: [] } },
+      },
+      {
+        revision: 2,
+        id: "m_2",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["ebb"],
+        delta: { existence: { added: ["ebb/membership"], removed: [] } },
       },
     ]);
   });

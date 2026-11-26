@@ -1170,8 +1170,10 @@ describe("replica: evict (#499)", () => {
         models: ["ebb"],
         delta: {
           existence: { added: [], removed: ["ebb/membership"] },
-          groups: { before: ["grp_1"], after: [] },
-          membership: { before: "e_1", after: null },
+          membership: {
+            before: { entityId: "e_1", groupId: "grp_1" },
+            after: null,
+          },
         },
       },
     ]);

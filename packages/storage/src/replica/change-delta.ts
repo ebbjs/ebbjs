@@ -3,7 +3,7 @@ import { linkEdges, systemValueString, type Entity, type LinkEdge } from "@ebbjs
 import { componentSetDelta } from "../internal/component-index";
 
 import { sourceRow } from "./row-index";
-import type { ChangeDelta } from "./types";
+import type { ChangeDelta, MembershipSide } from "./types";
 
 /** One row's state on one side of a change: the row and the components it carries. */
 export interface ChangeSides {
@@ -73,45 +73,41 @@ const existenceDelta = (
   return delta === null ? undefined : { added: delta.add, removed: delta.remove };
 };
 
-/** The group a row is filed under, or none when it left the set reads draw from. */
-const groupIdsOf = (row: Entity | null): readonly string[] => {
-  const filed = sourceRow(row);
-  if (filed === null) return [];
-  const groupId = systemValueString(filed, "membership", "group_id");
-  return groupId === null ? [] : [groupId];
-};
-
-/** The groups a change moved a row between: a move names both, leaving names one. */
-const groupDelta = (before: Entity | null, after: Entity | null): ChangeDelta["groups"] => {
-  const previous = groupIdsOf(before);
-  const next = groupIdsOf(after);
-  // A row carries at most one membership group, so an unchanged first id means
-  // it stayed where it was filed.
-  if (previous[0] === next[0]) return undefined;
-  return { before: previous, after: next };
-};
-
-/** The member entity a row files, or none when it files nobody on this side. */
-const subjectOf = (row: Entity | null): string | null => {
+/**
+ * The membership pair a row states, or none when it states no pair. The value
+ * carries both halves at once, so a side missing either half files no
+ * membership: the member a row-subscription resolver keys on and the group a
+ * scoped resolver keys on are both unknown then, and a reader falls back
+ * instead of to a key nothing declares.
+ */
+const membershipOf = (row: Entity | null): MembershipSide | null => {
   const filed = sourceRow(row);
   if (filed === null) return null;
   const entityId = systemValueString(filed, "membership", "entity_id");
-  return entityId === null || entityId.length === 0 ? null : entityId;
+  const groupId = systemValueString(filed, "membership", "group_id");
+  if (entityId === null || entityId.length === 0) return null;
+  if (groupId === null || groupId.length === 0) return null;
+  return { entityId, groupId };
 };
 
-/** The member a change moved a membership row between, naming the side it filed. */
-const subjectDelta = (before: Entity | null, after: Entity | null): ChangeDelta["membership"] => {
-  const previous = subjectOf(before);
-  const next = subjectOf(after);
-  return previous === next ? undefined : { before: previous, after: next };
+/** The pairs a change moved a row between: a move names both, leaving names one. */
+const membershipDelta = (
+  before: Entity | null,
+  after: Entity | null,
+): ChangeDelta["membership"] => {
+  const previous = membershipOf(before);
+  const next = membershipOf(after);
+  if (previous?.entityId === next?.entityId && previous?.groupId === next?.groupId) {
+    return undefined;
+  }
+  return { before: previous, after: next };
 };
 
 /**
- * What a change moved in the index: the edges, component existence and
- * membership groups on both sides, and the member a membership row filed.
- * Only a write that still holds the old state can answer this, which is why
- * the journal records it rather than a reader deriving it from the row.
- * `undefined` when nothing moved.
+ * What a change moved in the index: the edges, component existence and the
+ * membership pair on both sides. Only a write that still holds the old state
+ * can answer this, which is why the journal records it rather than a reader
+ * deriving it from the row. `undefined` when nothing moved.
  */
 export const changeDeltaOf = (
   id: string,
@@ -120,24 +116,17 @@ export const changeDeltaOf = (
 ): ChangeDelta | undefined => {
   const edges = edgeDelta(before.row, after.row);
   const existence = existenceDelta(id, before.components, after.components);
-  const groups = groupDelta(before.row, after.row);
-  const membership = subjectDelta(before.row, after.row);
-  if (
-    edges === undefined &&
-    existence === undefined &&
-    groups === undefined &&
-    membership === undefined
-  )
+  const membership = membershipDelta(before.row, after.row);
+  if (edges === undefined && existence === undefined && membership === undefined) {
     return undefined;
+  }
   const delta: {
     edges?: ChangeDelta["edges"];
     existence?: ChangeDelta["existence"];
-    groups?: ChangeDelta["groups"];
     membership?: ChangeDelta["membership"];
   } = {};
   if (edges !== undefined) delta.edges = edges;
   if (existence !== undefined) delta.existence = existence;
-  if (groups !== undefined) delta.groups = groups;
   if (membership !== undefined) delta.membership = membership;
   return delta;
 };
