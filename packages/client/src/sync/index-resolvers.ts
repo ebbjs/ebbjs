@@ -10,11 +10,13 @@
  * {@link createIndexResolvers} hands the dispatcher, so the two cannot drift.
  *
  * Every resolver answers from the row index #971 owns rather than from the
- * changed row's values. A change's journal entry names the components it
- * touched, not the index keys that moved, so a resolver that cannot prove a
- * key answers `null`: the dispatcher then touches every entry that declared
- * the index, which is exactly the breadth the component read set gave before
- * this narrowing existed. The failure mode is an extra touch, never a miss.
+ * changed row's values, and the membership resolver also leans on the change's
+ * journal delta: the entity a departed membership row filed is gone from the
+ * row. A change's journal entry names the components it touched, not the index
+ * keys that moved, so a resolver that cannot prove a key answers `null`: the
+ * dispatcher then touches every entry that declared the index, which is exactly
+ * the breadth the component read set gave before this narrowing existed. The
+ * failure mode is an extra touch, never a miss.
  */
 
 import type { Replica } from "@ebbjs/storage/replica";

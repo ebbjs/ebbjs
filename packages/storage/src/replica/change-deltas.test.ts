@@ -396,6 +396,143 @@ describe("replica: change delta (#1004)", () => {
     ]);
   });
 
+  it("names the subject a membership row arrives with", () => {
+    const replica = createReplica();
+    ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
+
+    expect(replica.changesSince(0)).toStrictEqual([
+      {
+        revision: 1,
+        id: "m_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["ebb"],
+        delta: {
+          existence: { added: ["ebb/membership"], removed: [] },
+          groups: { before: [], after: ["g1"] },
+          membership: { before: null, after: "e_1" },
+        },
+      },
+    ]);
+  });
+
+  it("names both subjects when a membership row is refiled onto another entity", () => {
+    const replica = createReplica();
+    ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_m_1_2",
+        entityId: "m_1",
+        model: "ebb",
+        gsn: 2,
+        ms: 20,
+        fields: {
+          membership: leaf({ entity_id: "e_2", group_id: "g1" }, "u_m_1_2", 20),
+        },
+      }),
+      2,
+    );
+
+    // The group stayed; the entity the row files moved, and the subject names
+    // both sides the way a group move names both groups.
+    expect(replica.changesSince(1)).toStrictEqual([
+      {
+        revision: 2,
+        id: "m_1",
+        kind: "content",
+        deleted: false,
+        components: ["ebb/membership"],
+        delta: { membership: { before: "e_1", after: "e_2" } },
+      },
+    ]);
+  });
+
+  it("leaves the subject out of a membership value write that keeps it", () => {
+    const replica = createReplica();
+    ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_m_1_2",
+        entityId: "m_1",
+        model: "ebb",
+        gsn: 2,
+        ms: 20,
+        fields: {
+          membership: leaf({ entity_id: "e_1", group_id: "g2" }, "u_m_1_2", 20),
+        },
+      }),
+      2,
+    );
+
+    // The group moved; the entity the row files did not, so only the group is
+    // recorded.
+    expect(replica.changesSince(1)).toStrictEqual([
+      {
+        revision: 2,
+        id: "m_1",
+        kind: "content",
+        deleted: false,
+        components: ["ebb/membership"],
+        delta: { groups: { before: ["g1"], after: ["g2"] } },
+      },
+    ]);
+  });
+
+  it("names the subject an unshared membership row filed", () => {
+    const replica = createReplica();
+    ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
+
+    ingest(replica, remove({ actionId: "a_2", updateId: "u_2", entityId: "m_1", model: "ebb" }), 2);
+
+    expect(replica.changesSince(1)).toStrictEqual([
+      {
+        revision: 2,
+        id: "m_1",
+        kind: "membership",
+        deleted: true,
+        membership: "left",
+        models: ["ebb"],
+        delta: {
+          groups: { before: ["g1"], after: [] },
+          membership: { before: "e_1", after: null },
+        },
+      },
+    ]);
+  });
+
+  it("carries no subject for a row that files none", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_title",
+        entityId: "todo_1",
+        model: "todo",
+        ms: 10,
+        fields: { title: leaf("T", "u_title", 10) },
+      }),
+      1,
+    );
+
+    expect(replica.changesSince(0)).toStrictEqual([
+      {
+        revision: 1,
+        id: "todo_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["todo"],
+        delta: { existence: { added: ["todo/title"], removed: [] } },
+      },
+    ]);
+  });
+
   it("names the group an evicted row left", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
@@ -413,6 +550,7 @@ describe("replica: change delta (#1004)", () => {
         delta: {
           existence: { added: [], removed: ["ebb/membership"] },
           groups: { before: ["g1"], after: [] },
+          membership: { before: "e_1", after: null },
         },
       },
     ]);
