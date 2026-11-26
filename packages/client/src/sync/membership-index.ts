@@ -14,8 +14,8 @@
  * - the keys it names — exactly the member entities the row filed on either
  *   side of the change. A readable row states its own side (a tombstone still
  *   states the entity it filed), and the journal's `delta.membership` states
- *   the side a row that is gone, or one that stopped filing, can no longer
- *   state.
+ *   the membership pair on each side, so the entity a row that is gone, or one
+ *   that stopped filing, can no longer state is still named.
  * - `null` — the change carries no delta at all, so the journal cannot say
  *   whose filing moved. Dispatch then touches every entry that declared the
  *   index: the fallback breadth, never a miss.
@@ -51,7 +51,9 @@ const membershipSubjects = (replica: Replica, change: ReplicaChange): readonly s
   const changed = replica.get(change.id);
   const filed = changed === undefined ? null : filedEntity(changed);
   const { before = null, after = null } = change.delta?.membership ?? {};
-  const keys = [...new Set([before, after, filed])].filter((key): key is string => key !== null);
+  const keys = [...new Set([before?.entityId ?? null, after?.entityId ?? null, filed])].filter(
+    (key): key is string => key !== null,
+  );
   if (keys.length > 0) return keys;
   // A delta that names no member on either side says no filing moved, so no
   // key exists for this change. Without one, the journal cannot say whether a

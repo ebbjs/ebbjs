@@ -130,6 +130,31 @@ describe("membership resolver: the three keys", () => {
     ]);
   });
 
+  it("keys the member the journal's pair names when no row is left to read", () => {
+    const replica = createReplica();
+    const resolve = resolveFor(replica, MEMBERSHIP_INDEX);
+
+    // The removed row is the only place the filing was stated, so the change's
+    // delta carries the pair on each side and the resolver answers its member
+    // half.
+    expect(
+      resolve({
+        revision: 1,
+        id: "m_gone",
+        kind: "membership",
+        deleted: true,
+        membership: "left",
+        models: ["ebb"],
+        delta: {
+          membership: {
+            before: { entityId: "todo_1", groupId: "grp_1" },
+            after: null,
+          },
+        },
+      }),
+    ).toEqual(["todo_1"]);
+  });
+
   it("keys a membership value write on the entity it still files", () => {
     const replica = createReplica();
     ingest(replica, membership(1, "m_1", "todo_1", "grp_1"));
