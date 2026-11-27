@@ -205,8 +205,9 @@ target after the page is chosen: `with({ content: true })` acquires the joined
 rows before projecting them.
 
 A cold projection on a page that needs acquisition runs the narrowing plan
-twice: once to learn the page is not fully resident, then again to acquire and
-project it. A large cold projection therefore pays the plan twice (#962).
+once: the page it narrowed is handed to acquisition, which installs only the
+components the projection reads. The results view reconciles a change that
+lands while acquisition is in flight, so the page cannot be left stale (#962).
 
 A relevant change patches the retained result only when it cannot move the row.
 An unselected `client.<model>.query()` reads `<model>/*`, so the patch rate

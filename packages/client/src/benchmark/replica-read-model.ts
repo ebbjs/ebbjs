@@ -29,9 +29,11 @@ import { carriesComponent, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
 import { createReplica, DEFAULT_JOURNAL_CAPACITY, jsonBytes } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
+import { defineModel, e, ModelRegistry, seedRegistry } from "@ebbjs/schema";
 
 import { fieldComponent, makeHlc } from "@ebbjs/core";
 import { emptyQuery, type Query } from "../sync/query";
+import { buildReplicaQueryBuilder, type QueryContext } from "../sync/query-builder";
 import { createChangeDispatcher } from "../sync/dependency-index";
 import { createIndexResolvers, relationIndex } from "../sync/index-resolvers";
 import { createQueryResults, type QuerySource } from "../sync/query-results";
@@ -54,6 +56,7 @@ import {
   replicaRowReader,
   sampleLatency,
   type CounterSnapshot,
+  type CountingStore,
   type LatencySample,
 } from "./harness";
 import {
@@ -87,6 +90,8 @@ const groupShape = Type.Object({ name: Type.String() });
 
 const HEAP_REPS = 5;
 const LOAD_REPS = 5;
+/** Cold and resident projection samples per the plan-run table (#962). */
+const PROJECTION_REPS = 5;
 const LATENCY_BATCHES = 5;
 const TRAVERSAL_CALLS_PER_BATCH = 2_000;
 const SEARCH_CALLS_PER_BATCH = 10;
@@ -1354,15 +1359,161 @@ const loadedBytes = memory.loaded.rows + memory.loaded.values + memory.loaded.in
 const steadyBytes =
   loadedBytes + memory.journal + memory.unconfirmedWrites + memory.inactiveResults;
 // The two base categories partition each loaded row's JSON apart from the
-// 8-byte `,"data":` separator they share. Recount per row: section 1a's totals
-// serialize arrays, whose commas and brackets a row sum does not carry.
+// 19 bytes they share: the `,"data":{"fields":` join (18) between the row
+// envelope and the bare fields map, plus the extra closing `}` the full row
+// carries. #971 moved `values` to `jsonBytes(entry.fields)`, where #966 read
+// `jsonBytes(row.data)`. Recount per row: section 1a's totals serialize
+// arrays, whose commas and brackets a row sum does not carry.
+const ROW_VALUE_JOIN_BYTES = 19;
 const splitJson = memory.loaded.rows + memory.loaded.values;
 const expectedSplit =
-  residentRows.reduce((sum, row) => sum + jsonBytes(row), 0) - 8 * residentRows.length;
+  residentRows.reduce((sum, row) => sum + jsonBytes(row), 0) -
+  ROW_VALUE_JOIN_BYTES * residentRows.length;
 if (splitJson !== expectedSplit) {
   throw new Error(
     `memory categories: rows + values is ${splitJson} bytes, expected ${expectedSplit}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 9. Plan runs per projection (#962)
+// ---------------------------------------------------------------------------
+
+/**
+ * The chain's schema: exactly the three values a fixture page carries, so a
+ * whole-model read projects them and acquires only what the replica lacks.
+ */
+const projectionModel = defineModel("page", {
+  title: e.string(),
+  icon: e.string(),
+  updated_at: e.number(),
+});
+const projectionRegistry = new ModelRegistry();
+seedRegistry(projectionRegistry, { page: projectionModel }, undefined);
+
+/**
+ * The fixture's rows with `page/icon` stripped from every page: every other
+ * component and all `ebb/link` keys survive, so the store is the only source of
+ * the one value a projection must acquire.
+ */
+const coldRecord = (): ReplicaRecord => ({
+  ...workspace.record,
+  entities: workspace.record.entities.map((entity) => {
+    if (entity.model !== "page") return entity;
+    const { icon: _icon, ...fields } = entity.data.fields;
+    return { ...entity, data: { fields } };
+  }),
+});
+
+/** The chain `namespace.ts` builds, with this fixture's registry and replica. */
+const projectionChain = (replica: Replica) => {
+  const context: QueryContext = {
+    entityName: "page",
+    registry: projectionRegistry,
+    replica,
+    results: createQueryResults(replica, createSubscriptionRegistry(replica)),
+    hydrated: () => true,
+    hydrate: async () => {},
+  };
+  return buildReplicaQueryBuilder("page", projectionModel.shape, context);
+};
+
+interface ProjectionSample {
+  /** Subscribe to settle, excluding the replica the sample reads. */
+  readonly ms: number;
+  readonly rows: number;
+  readonly planRuns: number;
+  /** `resultRowsRead`: scan rows, by-id reads, and projection reads. */
+  readonly rowsRead: number;
+  readonly acquired: number;
+}
+
+/**
+ * Read one projection through the shipped chain: `result()`, then `subscribe()`
+ * until the result is `current`. The counters are reset immediately before the
+ * subscription, so they cover this read and nothing else.
+ */
+const sampleProjection = async (
+  replica: Replica,
+  counted: CountingStore,
+): Promise<ProjectionSample> => {
+  const store = projectionChain(replica).result();
+  traversalCounter.reset();
+  counted.reset();
+  const start = performance.now();
+  let elapsed = 0;
+  let detach = (): void => {};
+  await new Promise<void>((settle) => {
+    detach = store.subscribe(() => {
+      if (store.getSnapshot().status === "current") {
+        elapsed = performance.now() - start;
+        settle();
+      }
+    });
+  });
+  const snapshot = store.getSnapshot();
+  detach();
+  if (snapshot.status !== "current" || snapshot.data === undefined) {
+    throw new Error(`cold projection: the result settled ${snapshot.status}`);
+  }
+  return {
+    ms: elapsed,
+    rows: snapshot.data.length,
+    planRuns: traversalCounter.planRuns,
+    rowsRead: traversalCounter.resultRowsRead,
+    acquired: counted.snapshot().rows,
+  };
+};
+
+/** A fresh cold replica per sample: acquisition is the read, not a warm-up. */
+const coldProjectionSamples = async (): Promise<readonly ProjectionSample[]> => {
+  const samples: ProjectionSample[] = [];
+  for (let rep = 0; rep < PROJECTION_REPS; rep += 1) {
+    const counted = createCountingStore(workspace.rows);
+    const cold = createReplica({ readComponent: counted.read, residencyTtlMs: 0 });
+    cold.load(coldRecord());
+    samples.push(await sampleProjection(cold, counted));
+  }
+  return samples;
+};
+
+/** The same shape over a replica that holds every projected component. */
+const residentProjectionSamples = async (): Promise<readonly ProjectionSample[]> => {
+  const samples: ProjectionSample[] = [];
+  for (let rep = 0; rep < PROJECTION_REPS; rep += 1) {
+    const counted = createCountingStore(workspace.rows);
+    const resident = createReplica({ readComponent: counted.read, residencyTtlMs: 0 });
+    resident.load(workspace.record);
+    samples.push(await sampleProjection(resident, counted));
+  }
+  return samples;
+};
+
+log("measuring plan runs per projection");
+const coldProjections = await coldProjectionSamples();
+const residentProjections = await residentProjectionSamples();
+for (const sample of [...coldProjections, ...residentProjections]) {
+  if (sample.rows !== workspace.counts.pages) {
+    throw new Error(`cold projection: projected ${sample.rows} of ${workspace.counts.pages} rows`);
+  }
+  // The narrowed page is acquisition's input, so one read plans it once.
+  if (sample.planRuns !== 1) {
+    throw new Error(`projection: ${sample.planRuns} plan runs, expected 1`);
+  }
+}
+for (const sample of coldProjections) {
+  // The narrowed page acquires what it lacks; a store read proves this read
+  // took the acquire-then-project path rather than settling synchronously.
+  if (sample.acquired !== workspace.counts.pages) {
+    throw new Error(
+      `cold projection: acquired ${sample.acquired} of ${workspace.counts.pages} rows`,
+    );
+  }
+}
+for (const sample of residentProjections) {
+  if (sample.acquired !== 0) {
+    throw new Error(`resident projection: acquired ${sample.acquired} store rows`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1849,24 +2000,67 @@ push(
   `| **steady state** (loaded replica + journal + unconfirmed writes + inactive result) | **${bytes(steadyBytes)}** | **${mb(steadyBytes)}** |`,
   `| snapshot written on top (not resident unless persisting) | ${bytes(memory.snapshot)} | ${mb(memory.snapshot)} |`,
   "",
-  '`rows + values` partitions each resident row\'s JSON apart from the 8-byte `,"data":`',
-  "separator the two share; section 1a's model buckets serialize arrays, whose punctuation a",
-  "per-row sum does not carry. The split attributes row identity separately from values; the",
-  "heap total in 1b is a different unit, not their sum. The index figure is the derived",
-  "structures only — the model,",
-  "component, and adjacency maps and the version stamps — which section 1b sees as heap bytes",
+  "`rows + values` partitions each resident row's JSON apart from the 19 bytes the two",
+  'share — the `,"data":{"fields":` join plus the full row\'s extra closing `}`; the values',
+  "category is the bare fields map since #971. Section 1a's model buckets serialize arrays,",
+  "whose punctuation a per-row sum does not carry. The split attributes row identity separately",
+  "from values; the heap total in 1b is a different unit, not their sum. The index figure is the",
+  "derived structures only — the model, component, and adjacency maps and the version stamps —",
+  "which section 1b sees as heap bytes",
   "on top of its base map. The journal is one array at its default capacity; the overlay holds",
   "the composed view of every row an optimistic write touched, which is the cost the",
   "unconfirmed-writes line adds to the base. The snapshot is the whole base written out again",
   "for persistence (#977 replaces it with a row list), so it is the one line that must not be",
   "added to a resident total.",
   "",
+);
+
+// 9. Plan runs per projection
+const projectionCell = (samples: readonly ProjectionSample[]): string => {
+  const value = (pick: (sample: ProjectionSample) => number): string =>
+    grouped(median(samples.map(pick)));
+  return `${value((sample) => sample.planRuns)} | ${value((sample) => sample.rowsRead)} | ${value(
+    (sample) => sample.rows,
+  )} | ${value((sample) => sample.acquired)} | ${ms(median(samples.map((sample) => sample.ms)))}`;
+};
+
+push(
+  "## 9. Plan runs per projection (#962)",
+  "",
+  'One read through the shipped chain: `buildReplicaQueryBuilder("page", …)` over the',
+  "fixture's `page` shape (`title`, `icon`, `updated_at`), read with `result()` and",
+  '`subscribe()` and settled at `status === "current"`, the way `namespace.ts` mounts a',
+  "projection. **Cold** is a replica loaded from the fixture's record with `page/icon` removed",
+  "from every page row — every other component and all `ebb/link` keys kept — so the projection",
+  "must acquire that one value; its `readComponent` is a counted store holding the full rows. A",
+  "fresh cold replica per sample keeps the acquisition in the timed read, not in a warm-up.",
+  "",
+  "**Plan runs** is `traversalCounter.planRuns`: one `executePlan` execution. A cold page",
+  "narrows once and hands those rows to acquisition, so it reports 1; before #962 the same page",
+  "was planned twice, **2**. A resident page projects synchronously from the narrowing run, so",
+  "it also reports 1. **Rows examined** is `traversalCounter.resultRowsRead`, the shipped",
+  "propagation counter: it includes the projection's own by-id reads, not just the plan's scan,",
+  "and it does not see acquisition (the replica acquires through its store, not through the",
+  "executor). **Rows acquired** is the store rows those reads installed. Wall time is the",
+  `median of ${PROJECTION_REPS} samples from \`subscribe()\` to settle; the replica's build is`,
+  "outside the timer, but the results view is not: it is the mounted first read, so it also",
+  "pays the entry's claims (one per projected component per row), which a plan-only read does",
+  "not.",
+  "",
+  "| projection | plan runs | rows examined (incl. projection) | rows projected | rows acquired | median wall time |",
+  "| --- | ---: | ---: | ---: | ---: | ---: |",
+  `| cold (\`page/icon\` only in the store) | ${projectionCell(coldProjections)} |`,
+  `| resident (same shape, all components held) | ${projectionCell(residentProjections)} |`,
+  "",
+);
+
+push(
   "---",
   "",
   `_Harness runtime: ${fixed((performance.now() - harnessStart) / 1000, 1)} s from module start ` +
     `(fixture generation, ${HEAP_REPS} heap reps, ${LOAD_REPS} build reps, ${LATENCY_BATCHES} batches ` +
     `per timed read, one store-backed body sweep, ${changeWorkloads.length} change workloads, ` +
-    `one memory-category replica)._`,
+    `one memory-category replica, ${PROJECTION_REPS * 2} projection reads)._`,
   "",
 );
 
