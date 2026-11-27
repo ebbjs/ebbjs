@@ -361,17 +361,20 @@ describe("dependency-indexed dispatch: correctness", () => {
     });
     dispatcher.add({ id: 2 }, { components: ["note/title"] });
 
-    // The typo is named, and so is everything the dispatcher can serve, so the
-    // author reads the fix out of the error instead of guessing.
-    expect(() =>
-      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] }),
-    ).toThrow(UnknownIndexError);
-    expect(() =>
-      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] }),
-    ).toThrow(/relation:typo\/typo/);
-    expect(() =>
-      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] }),
-    ).toThrow(/membership, scope/);
+    // The typo is named, and the error says which indices the dispatcher can
+    // serve, so the author reads the fix out of it instead of guessing.
+    let refusal: unknown;
+    try {
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] });
+    } catch (err) {
+      refusal = err;
+    }
+    expect(refusal).toBeInstanceOf(UnknownIndexError);
+    // SAFETY: asserted to be one on the line above.
+    const error = refusal as UnknownIndexError;
+    expect(error.index).toBe("relation:typo/typo");
+    expect(error.known).toEqual(["membership", "scope"]);
+    expect(error.message).toContain("relation:typo/typo");
 
     // Nothing was indexed for the refused entry, so the dispatcher is exactly
     // what it was: one entry, and the batch it alone matches reaches it.

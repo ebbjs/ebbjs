@@ -29,6 +29,7 @@ import {
 } from "@ebbjs/storage/replica";
 
 import { createClient } from "../client";
+import { UnknownIndexError } from "../dependency-index";
 import { createSubscriptionRegistry, type SubscriptionRegistryOptions } from "../subscriptions";
 import { callApplyAction, flushTasks, platformUpdate, rowComponents, waitFor } from "../test-utils";
 
@@ -992,11 +993,23 @@ describe("subscription registry: an index no resolver serves (#1006)", () => {
 
     // The registry builds its resolvers from a fixed set, so it can tell a
     // typo'd index from one it merely cannot narrow. The author hears about it
-    // where they wrote it, not as a batch that always touches them.
-    expect(() => entry.depend([], TYPO)).toThrow(/existence:todo\/due/);
+    // where they wrote it — naming the subscription and the index — not as a
+    // batch that always touches them.
+    let refusal: unknown;
+    try {
+      entry.depend([], TYPO);
+    } catch (err) {
+      refusal = err;
+    }
+    expect(refusal).toBeInstanceOf(UnknownIndexError);
+    // SAFETY: asserted to be one on the line above.
+    const error = refusal as UnknownIndexError;
+    expect(error.index).toBe("existence:todo/due");
+    expect(error.subject).toBe("typo");
     // The names it does serve, so the author sees the intended one beside the
     // typo rather than having to go read the registry.
-    expect(() => entry.depend([], TYPO)).toThrow(/membership, relation:\*, exists:\*, scope/);
+    expect(error.known).toContain("membership");
+    expect(error.known).toContain("exists:*");
     entry.release();
     subscriptions.close();
   });
@@ -1012,7 +1025,7 @@ describe("subscription registry: an index no resolver serves (#1006)", () => {
     // entry held before it are still what dispatch reaches it through.
     entry.depend([{ id: "doc_1", components: ["document/title"] }]);
     expect(() => entry.depend([{ id: "doc_1", components: ["document/body"] }], TYPO)).toThrow(
-      /existence:todo\/due/,
+      UnknownIndexError,
     );
 
     expect(entry.dependencies).toEqual([{ id: "doc_1", components: ["document/title"] }]);
@@ -1028,10 +1041,18 @@ describe("subscription registry: an index no resolver serves (#1006)", () => {
 
     // A refused declaration fails the open, so the registry holds nothing for
     // that key: the author fixes the name and subscribes again rather than
-    // inheriting a half-built entry no dispatch can reach.
-    expect(() =>
-      subscriptions.open({ kind: "query", key: "typo", reads: [], indices: TYPO }),
-    ).toThrow(/existence:todo\/due/);
+    // inheriting a half-built entry no dispatch can reach. The refusal names the
+    // key they opened, which is the query they have to go and fix.
+    let refusal: unknown;
+    try {
+      subscriptions.open({ kind: "query", key: "typo", reads: [], indices: TYPO });
+    } catch (err) {
+      refusal = err;
+    }
+    expect(refusal).toBeInstanceOf(UnknownIndexError);
+    // SAFETY: asserted to be one on the line above.
+    expect((refusal as UnknownIndexError).subject).toBe("typo");
+    expect((refusal as UnknownIndexError).message).toContain('declared by "typo"');
     expect(subscriptions.stats().live).toBe(0);
     expect(subscriptions.entries()).toEqual([]);
 

@@ -131,14 +131,31 @@ export class UnknownIndexError extends Error {
   readonly index: string;
   /** The names the dispatcher's resolvers answer to, in registration order. */
   readonly known: readonly string[];
+  /**
+   * The subscription that declared it, when the refusal is re-stated for one.
+   * The dispatcher indexes an opaque entry, so only the registry that built it
+   * can say which subscription an author has to go and fix; it names it on the
+   * way out. `null` for a dispatcher a test drives by hand.
+   */
+  readonly subject: string | null;
 
-  constructor(index: string, known: readonly string[]) {
-    super(`no resolver for index "${index}"; known indices: ${known.join(", ")}`);
+  constructor(index: string, known: readonly string[], subject: string | null = null) {
+    const declared = subject === null ? "" : ` declared by "${subject}"`;
+    super(`no resolver for index "${index}"${declared}; known indices: ${known.join(", ")}`);
     this.name = "UnknownIndexError";
     this.index = index;
     this.known = known;
+    this.subject = subject;
   }
 }
+
+/**
+ * The same refusal, naming the subscription that declared it. A dispatcher sees
+ * an opaque entry, so the registry adds the key its author wrote; the dispatch
+ * seam stays the one place the check runs.
+ */
+export const knownIndexErrorFor = (error: UnknownIndexError, subject: string): UnknownIndexError =>
+  new UnknownIndexError(error.index, error.known, subject);
 
 export interface ChangeDispatcherOptions<T> {
   readonly journal: ChangeJournal;

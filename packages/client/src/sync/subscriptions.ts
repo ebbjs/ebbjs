@@ -67,6 +67,8 @@ import {
 
 import {
   createChangeDispatcher,
+  knownIndexErrorFor,
+  UnknownIndexError,
   type ChangeBatch,
   type DispatchCounts,
   type IndexDependency,
@@ -705,6 +707,10 @@ interface LeaseWatchdog {
   readonly warn: (message: string) => void;
 }
 
+/** A refused index declaration, re-stated for the subscription an author wrote. */
+const unknownIndexFor = (error: unknown, entry: { readonly key: string }): unknown =>
+  error instanceof UnknownIndexError ? knownIndexErrorFor(error, entry.key) : error;
+
 /**
  * Build the registry over a live replica. Every query and row subscription goes
  * through this one table, so this is also the one place that dispatches a
@@ -890,26 +896,29 @@ export const createSubscriptionRegistry = (
     const claimsMoved = !sameDependencies(entry.dependencies, next);
     const keysMoved = !sameIndices(entry.suppliedIndices, nextIndices);
     if (!claimsMoved && !keysMoved) return;
-    const previousIndices = entry.suppliedIndices;
-    const previousDependencies = entry.dependencies;
-    const previousReads = entry.reads;
-    const previousGeneration = entry.generation;
-    const previousClaimsSince = entry.claimsSince;
-    const previousWarnedAt = entry.warnedAt;
-    // A refusal undoes the whole move, not just the keys: the entry keeps the
-    // claims, the read set, and the acquire generation it held, so what dispatch
-    // reaches it through is still what the entry says it depends on (#1006).
+    /** What this move is about to overwrite, so a refused declaration restores it. */
+    const held = {
+      suppliedIndices: entry.suppliedIndices,
+      dependencies: entry.dependencies,
+      reads: entry.reads,
+      generation: entry.generation,
+      claimsSince: entry.claimsSince,
+      warnedAt: entry.warnedAt,
+    };
+    /**
+     * Re-index the entry, and undo the whole move if the dispatcher refuses the
+     * declaration (#1006). A refusal is not a partial move: the entry keeps the
+     * keys, claims, read set, acquire generation and quiet period it held, so
+     * what dispatch reaches it through is still what the entry says it depends
+     * on. A key-only move touched nothing but the keys, and restoring the rest
+     * is then a write of the value already there.
+     */
     const reindex = (): void => {
       try {
         dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
       } catch (err) {
-        entry.suppliedIndices = previousIndices;
-        entry.dependencies = previousDependencies;
-        entry.reads = previousReads;
-        entry.generation = previousGeneration;
-        entry.claimsSince = previousClaimsSince;
-        entry.warnedAt = previousWarnedAt;
-        throw err;
+        Object.assign(entry, held);
+        throw unknownIndexFor(err, entry);
       }
     };
     if (keysMoved) entry.suppliedIndices = nextIndices;
@@ -1215,7 +1224,7 @@ export const createSubscriptionRegistry = (
         // for a key that never became a subscription (#1006).
         entries.delete(mapKey);
         entry.state = "terminal";
-        throw err;
+        throw unknownIndexFor(err, entry);
       }
       armWatchdog();
       if (entry.kind === "row" && entry.row !== null) {
