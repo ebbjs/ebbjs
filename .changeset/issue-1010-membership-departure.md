@@ -8,7 +8,7 @@ The membership index a row subscription declares now distinguishes "this change
 names no key" from "cannot say". A live membership row answers the entity it
 files — a tombstone still states it. A row that no longer states it, because the
 replica dropped it (an eviction) or the change took the subject away, answers the
-member entities the change's delta records on either side, so the row
+member half of each `delta.membership` pair the change records, so the row
 subscription watching that entity is touched instead of skipped. A refile
 answers both entities it moved the row between, since each lost or gained a
 group.

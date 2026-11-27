@@ -29,10 +29,9 @@ export type ReplicaChange = ContentChange | MembershipChange;
 
 /**
  * What a change moved that the post-change row no longer shows: the edges and
- * the components whose existence moved, the membership groups on both sides,
- * and the member entity a membership row filed on each side. The journal is
- * the only place an old state is still in hand, so a derived reader learns it
- * here instead of guessing from the new row.
+ * the components whose existence moved, and the membership pair on both sides.
+ * The journal is the only place an old state is still in hand, so a derived
+ * reader learns it here instead of guessing from the new row.
  *
  * Every part is optional and omitted when nothing moved, so a value write to an
  * existing component carries no delta at all.
@@ -57,21 +56,27 @@ export interface ChangeDelta {
     readonly added: readonly string[];
     readonly removed: readonly string[];
   };
-  /** The row's own `ebb/membership` group ids on each side. */
-  readonly groups?: {
-    readonly before: readonly string[];
-    readonly after: readonly string[];
-  };
   /**
-   * The member entity id the row's `ebb/membership` filed on each side, `null`
-   * for a side with no filed subject. It is what lets a membership departure
-   * name the entity it unshared or was evicted from, which the removed row no
-   * longer states.
+   * The membership pair the row's `ebb/membership` stated on each side, `null`
+   * for a side that stated none. One part, because the value carries exactly
+   * one pair: a membership departure names both the entity and the group it
+   * left, which the removed row no longer states, and a refile names both
+   * sides.
    */
   readonly membership?: {
-    readonly before: string | null;
-    readonly after: string | null;
+    readonly before: MembershipSide | null;
+    readonly after: MembershipSide | null;
   };
+}
+
+/**
+ * One side of a row's `ebb/membership`: the member entity it files and the
+ * group it files it in. A row carries at most one pair, so a side is one value
+ * or none.
+ */
+export interface MembershipSide {
+  readonly entityId: string;
+  readonly groupId: string;
 }
 
 interface ChangeBase {

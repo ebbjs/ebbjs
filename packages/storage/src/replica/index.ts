@@ -20,6 +20,7 @@ export type {
   ContentChange,
   MembershipChange,
   MembershipQuery,
+  MembershipSide,
   MembershipTransition,
   Replica,
   ReplicaBytes,
