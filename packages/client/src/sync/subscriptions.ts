@@ -894,6 +894,8 @@ export const createSubscriptionRegistry = (
     const previousDependencies = entry.dependencies;
     const previousReads = entry.reads;
     const previousGeneration = entry.generation;
+    const previousClaimsSince = entry.claimsSince;
+    const previousWarnedAt = entry.warnedAt;
     // A refusal undoes the whole move, not just the keys: the entry keeps the
     // claims, the read set, and the acquire generation it held, so what dispatch
     // reaches it through is still what the entry says it depends on (#1006).
@@ -905,6 +907,8 @@ export const createSubscriptionRegistry = (
         entry.dependencies = previousDependencies;
         entry.reads = previousReads;
         entry.generation = previousGeneration;
+        entry.claimsSince = previousClaimsSince;
+        entry.warnedAt = previousWarnedAt;
         throw err;
       }
     };
@@ -1204,7 +1208,15 @@ export const createSubscriptionRegistry = (
         return handle;
       }
       entries.set(mapKey, entry);
-      dispatcher.add(entry, indexDependencies(entry));
+      try {
+        dispatcher.add(entry, indexDependencies(entry));
+      } catch (err) {
+        // A refused declaration fails the open, so the registry holds nothing
+        // for a key that never became a subscription (#1006).
+        entries.delete(mapKey);
+        entry.state = "terminal";
+        throw err;
+      }
       armWatchdog();
       if (entry.kind === "row" && entry.row !== null) {
         depend(entry, rowDependencies(replica, entry.row, entry.rowComponents));

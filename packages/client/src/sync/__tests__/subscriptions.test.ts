@@ -1023,6 +1023,24 @@ describe("subscription registry: an index no resolver serves (#1006)", () => {
     subscriptions.close();
   });
 
+  it("leaves no subscription behind when opening is refused", () => {
+    const { subscriptions } = harness();
+
+    // A refused declaration fails the open, so the registry holds nothing for
+    // that key: the author fixes the name and subscribes again rather than
+    // inheriting a half-built entry no dispatch can reach.
+    expect(() =>
+      subscriptions.open({ kind: "query", key: "typo", reads: [], indices: TYPO }),
+    ).toThrow(/existence:todo\/due/);
+    expect(subscriptions.stats().live).toBe(0);
+    expect(subscriptions.entries()).toEqual([]);
+
+    const entry = subscriptions.open({ kind: "query", key: "typo", reads: [] });
+    expect(entry.state).toBe("live");
+    entry.release();
+    subscriptions.close();
+  });
+
   it("keeps the fallback in a production build", () => {
     const before = process.env.NODE_ENV;
     process.env.NODE_ENV = "production";
