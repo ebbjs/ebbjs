@@ -97,11 +97,13 @@ const DISPATCH_ROW_SUBSCRIPTIONS = 4_000;
 const DISPATCH_QUERY_SUBSCRIPTIONS = 1_000;
 const DISPATCH_CHANGES = 100;
 /**
- * The relationship-heavy fixture (#961): subscriptions that follow one relation
- * target each, and a batch of writes to those target rows.
+ * The relationship-heavy batch (#961): subscriptions that follow one relation
+ * target each, and a batch of link writes from source pages to a few popular
+ * targets those subscriptions watch.
  */
 const DISPATCH_RELATION_SUBSCRIPTIONS = 1_000;
 const DISPATCH_RELATION_CHANGES = 100;
+const DISPATCH_RELATION_POPULAR_TARGETS = 10;
 /** The #495 spike's one-pass projection build at the same 10k shape. */
 const SPIKE_PROJECTION_BUILD_MS = 37.0;
 
@@ -1092,10 +1094,15 @@ const dispatch = measureDispatch();
 
 /**
  * The relationship-heavy batch #961 measures: a subscription per relation
- * target, then one batch of writes to those targets. Before the index, a join
- * read its target model whole, so every write to a `page` touched every
- * subscription. The relation index keys each subscription on its own target,
- * so only the changed targets are touched.
+ * target, then one batch of link writes that each add a `parent` edge from a
+ * distinct source page to one of a few popular targets those subscriptions
+ * watch. Before the index, a join read `ebb/link` and the target model whole,
+ * so every link write touched every subscription. The relation index keys each
+ * subscription on its own target, and the journal's edge delta names the target
+ * a write added, so the batch resolves to the popular targets plus each changed
+ * source row — and no source is itself a watched target, so the row key adds no
+ * subscription. #961's resolver answered `null` for a link write and would fall
+ * back to every reader of the relation on this batch.
  */
 const measureRelationDispatch = (): {
   readonly subscriptions: number;
@@ -1105,11 +1112,37 @@ const measureRelationDispatch = (): {
   readonly afterLookups: number;
 } => {
   const subscriptions = Math.min(DISPATCH_RELATION_SUBSCRIPTIONS, config.n);
-  const changes = Math.min(DISPATCH_RELATION_CHANGES, subscriptions);
+  const popularCount = Math.min(DISPATCH_RELATION_POPULAR_TARGETS, subscriptions);
   const relation = relationIndex("parent", "page");
   /** One distinct target per subscription, spread across the id space. */
   const targetFor = (index: number): string =>
     pageId(Math.floor(((index + 0.5) * config.n) / subscriptions));
+  const popularFor = (index: number): string =>
+    targetFor(Math.floor((index * subscriptions) / popularCount));
+  const watched = new Set(Array.from({ length: subscriptions }, (_, index) => targetFor(index)));
+  const wanted = Math.min(DISPATCH_RELATION_CHANGES, subscriptions);
+  // A source should not be a watched target: its own row key would otherwise
+  // touch the subscription that watches it and inflate the count. If the
+  // fixture is small enough that every row is watched, fall back to any rows so
+  // the batch still reports a real count rather than an empty one.
+  const everyIndex = Array.from({ length: config.n }, (_, index) => index);
+  const unwatched = everyIndex.filter((index) => !watched.has(pageId(index)));
+  const sourceIndices = (unwatched.length >= wanted ? unwatched : everyIndex).slice(0, wanted);
+  const changes = sourceIndices.length;
+  /**
+   * A popular target the source does not already point at, so every write moves
+   * an edge and journals a delta. A no-op write would carry none and fall back
+   * to every reader of the relation.
+   */
+  const addedTargetFor = (index: number): string => {
+    const source = pageId(sourceIndices[index] ?? 0);
+    const existing = replica.relationships({ as: "parent", type: "page", sourceId: source });
+    for (let step = 0; step < popularCount; step += 1) {
+      const candidate = popularFor((index + step) % popularCount);
+      if (!existing.includes(candidate)) return candidate;
+    }
+    return popularFor(index % popularCount);
+  };
   const before = createChangeDispatcher<{ readonly id: number }>({
     journal: replica,
     onChange: () => {},
@@ -1120,19 +1153,35 @@ const measureRelationDispatch = (): {
     onChange: () => {},
   });
   for (let index = 0; index < subscriptions; index += 1) {
-    // Before #961: the join read `ebb/link` and the target model whole.
-    before.add({ id: index }, { components: ["ebb/link"], models: ["page"] });
+    // Before #961: the predicate read declared `ebb/link`.
+    before.add({ id: index }, { components: ["ebb/link"] });
     after.add({ id: index }, { indices: [{ index: relation, key: targetFor(index) }] });
   }
-  const updates = Array.from({ length: changes }, (_, index) => {
+  const updates = sourceIndices.map((sourceIndex, index) => {
     benchPosition += 1;
     const updateId = `u_relation_${benchPosition}`;
     return {
       id: updateId,
-      subject_id: targetFor(index),
-      component: "page/title" as const,
-      method: "replace" as const,
-      data: { value: `Relation ${index}`, update_id: updateId, hlc: makeHlc(benchPosition) },
+      subject_id: pageId(sourceIndex),
+      component: "ebb/link" as const,
+      method: "merge" as const,
+      data: {
+        map: {
+          parent: {
+            map: {
+              page: {
+                map: {
+                  [addedTargetFor(index)]: {
+                    value: true,
+                    update_id: updateId,
+                    hlc: makeHlc(benchPosition),
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     };
   });
   benchPosition += 1;
@@ -1717,14 +1766,18 @@ push(
   `| index lookups / batch | ${grouped(dispatch.lookups)} |`,
   `| scan work avoided (changes × subscriptions) | ${grouped(dispatch.scanWork)} |`,
   "",
-  "A relationship-heavy batch (#961): one subscription per relation target, then one batch of",
-  "writes to `page/title` on those targets. Before the index, a joined read declared `ebb/link`",
-  "and the target model whole, so every write to a page touched every subscription. The",
-  "`relation:parent/page` index keys each subscription on its own target, so only the changed",
-  "targets are touched; a link write still falls back to every reader of the relation, because",
-  "the journal names the component, not the target an edge dropped.",
+  "A relationship-heavy batch (#961, #1005): one subscription per relation target, then one batch",
+  "of link writes that each add a `parent` edge from a distinct source page to one of ten popular",
+  "targets those subscriptions watch. Before #961 the predicate read declared `ebb/link`, so every",
+  "link write touched every subscription. The `relation:parent/page` index keys each subscription on",
+  "its own target, and the journal's edge delta names the target each write added, so the batch",
+  "resolves to those ten targets plus each changed source row — which the fixture keeps outside",
+  "the watched set, so the row key adds nothing.",
+  "#961's resolver answered `null` for a link write and would fall back to every reader here. A read",
+  "that also projects the relation keeps `ebb/link` in its dispatch set (#1005), because a join",
+  "projects the source row's edges, so this batch measures the predicate read.",
   "",
-  "| measure | before #961 | after #961 |",
+  "| measure | before #961 | after #961/#1005 |",
   "| --- | ---: | ---: |",
   `| subscriptions indexed | ${grouped(relationDispatch.subscriptions)} | ${grouped(relationDispatch.subscriptions)} |`,
   `| changes in the batch | ${grouped(relationDispatch.changes)} | ${grouped(relationDispatch.changes)} |`,

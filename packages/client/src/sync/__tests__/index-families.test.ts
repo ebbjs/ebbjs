@@ -109,6 +109,9 @@ const changeNaming = (dependency: IndexDependency): ReplicaChange => {
       deleted: false,
       membership: "entered",
       models: ["todo"],
+      delta: {
+        membership: { before: null, after: { entityId: "todo_1", groupId: dependency.key } },
+      },
     };
   }
   return {

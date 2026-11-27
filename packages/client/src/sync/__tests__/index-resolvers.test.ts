@@ -2,18 +2,18 @@
  * The relation, existence and scope index resolvers (#961).
  *
  * A query read declares the derived indices its predicates and joins read, and
- * the registry's resolvers turn a change back into the keys it may have moved.
- * Dispatch then touches the subscriptions whose key changed instead of every
- * subscription that reads the component — while a change the resolver cannot
- * resolve (a link write whose removed target the journal does not name) still
- * touches every reader of that index, which is the breadth the component read
- * set gave before.
+ * the registry's resolvers turn a change (and its journal delta) back into the
+ * keys it may have moved. Dispatch then touches the subscriptions whose key
+ * changed instead of every subscription that reads the component — while a
+ * change whose shape cannot say what moved (a link write or membership change
+ * with no delta) still touches every reader of that index, which is the breadth
+ * the component read set gave before.
  */
 
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica } from "@ebbjs/storage/replica";
+import { createReplica, type Replica, type ReplicaChange } from "@ebbjs/storage/replica";
 
 import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
@@ -76,13 +76,13 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
     ),
   );
 
-const link = (gsn: number, sourceId: string, targetId: string): Action =>
+const link = (gsn: number, sourceId: string, targetId: string, present = true): Action =>
   linkAction({
     id: `a_${gsn}`,
     hlc: makeHlc(1_711_036_800_000, gsn),
     gsn,
     sourceId,
-    edges: [{ as: "assignee", type: "issue", targetId }],
+    edges: [{ as: "assignee", type: "issue", targetId, present }],
   });
 
 const write = async (client: Client, next: Action): Promise<void> => {
@@ -145,11 +145,12 @@ describe("index resolvers at the client seam", () => {
     hasDue();
   });
 
-  it("falls back to every relation reader for a link write", async () => {
+  it("touches the relation reader of the target an edge delta moved", async () => {
     const client = makeClient();
     await write(client, put(1, "user_1", "user", { name: "Ada" }));
     await write(client, put(2, "user_2", "user", { name: "Grace" }));
     await write(client, put(3, "issue_1", "issue", { title: "Ship" }));
+    await write(client, link(4, "issue_1", "user_1"));
 
     const one = client.issue
       .query()
@@ -163,14 +164,37 @@ describe("index resolvers at the client seam", () => {
       .subscribe(() => {});
     await flushTasks();
 
-    // The write may have removed an edge to either target, and the journal
-    // names the component, not the target it dropped. Both readers are handed
-    // the batch: a fallback over-touches, it never misses.
-    await write(client, link(4, "issue_1", "user_2"));
-    expect(touched(client)).toBe(2);
+    // The journal's edge delta names the target the write dropped, so only that
+    // target's reader is touched — not every reader of the relation.
+    await write(client, link(5, "issue_1", "user_1", false));
+    expect(touched(client)).toBe(1);
+    // The other target's reader still watches its own key.
+    await write(client, link(6, "issue_1", "user_2"));
+    expect(touched(client)).toBe(1);
 
     one();
     two();
+  });
+
+  it("follows the changed row's own key on a link write", async () => {
+    const client = makeClient();
+    await write(client, put(1, "user_1", "user", { name: "Ada" }));
+    await write(client, put(2, "issue_1", "issue", { title: "Ship" }));
+    await write(client, link(3, "issue_1", "user_1"));
+
+    // Keyed on the changed row, not on either edge target: the reader follows
+    // the row's projected values, so the write has to reach it too.
+    const row = client.issue
+      .query()
+      .select({})
+      .where("assignee", "issue_1")
+      .subscribe(() => {});
+    await flushTasks();
+
+    await write(client, link(4, "issue_1", "user_1", false));
+    expect(touched(client)).toBe(1);
+
+    row();
   });
 });
 
@@ -204,129 +228,233 @@ const resolveFor = (replica: Replica, index: string) => {
   throw new Error(`no resolver for ${index}`);
 };
 
-describe("index resolvers: the three keys", () => {
-  it("keys a relation change on its target row, and cannot resolve a link write", () => {
-    const replica = replicaWith([
-      {
-        id: "u_link",
-        subject_id: "issue_1",
-        component: "ebb/link",
-        method: "merge",
-        data: {
-          map: {
-            assignee: {
-              map: {
-                issue: {
-                  map: { user_1: { value: true, update_id: "u_link", hlc: makeHlc(1) } },
-                },
-              },
-            },
-          },
-        },
-      },
-    ]);
-    const resolve = resolveFor(replica, "relation:assignee/issue");
+const content = (
+  revision: number,
+  id: string,
+  components: readonly string[],
+  delta?: ReplicaChange["delta"],
+): ReplicaChange =>
+  delta === undefined
+    ? { revision, id, kind: "content", deleted: false, components }
+    : { revision, id, kind: "content", deleted: false, components, delta };
 
-    expect(
-      resolve({
-        revision: 1,
-        id: "user_1",
-        kind: "content",
-        deleted: false,
-        components: ["user/name"],
-      }),
-    ).toEqual(["user_1"]);
-    expect(
-      resolve({
-        revision: 2,
-        id: "issue_1",
-        kind: "content",
-        deleted: false,
-        components: ["ebb/link"],
-      }),
-    ).toBeNull();
-    // A membership change names the row, so a joined target read follows it.
-    expect(
-      resolve({
-        revision: 3,
-        id: "user_1",
+const membership = (
+  revision: number,
+  id: string,
+  transition: "entered" | "left" | "changed-model",
+  models: readonly string[],
+  delta?: ReplicaChange["delta"],
+): ReplicaChange =>
+  delta === undefined
+    ? {
+        revision,
+        id,
         kind: "membership",
-        deleted: true,
-        membership: "left",
-        models: ["user"],
-      }),
-    ).toEqual(["user_1"]);
+        deleted: transition === "left",
+        membership: transition,
+        models,
+      }
+    : {
+        revision,
+        id,
+        kind: "membership",
+        deleted: transition === "left",
+        membership: transition,
+        models,
+        delta,
+      };
+
+describe("index resolvers: observation", () => {
+  it("keeps the changed row for a relation change that names no edge", () => {
+    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+
+    expect(resolve(content(1, "user_1", ["user/name"]))).toEqual(["user_1"]);
   });
 
-  it("keys an existence change on the component it names", () => {
+  it("answers a link write's moved targets under the relation the index names", () => {
+    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+
+    expect(
+      resolve(
+        content(1, "issue_1", ["ebb/link"], {
+          edges: [
+            { as: "assignee", type: "issue", added: ["user_2"], removed: ["user_1"] },
+            { as: "tags", type: "issue", added: ["label_1"], removed: [] },
+          ],
+        }),
+      ),
+    ).toEqual(["issue_1", "user_2", "user_1"]);
+  });
+
+  it("answers only the changed row when the delta moved another relation", () => {
+    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+
+    expect(
+      resolve(
+        content(1, "issue_1", ["ebb/link"], {
+          edges: [{ as: "tags", type: "issue", added: ["label_1"], removed: [] }],
+        }),
+      ),
+    ).toEqual(["issue_1"]);
+  });
+
+  it("falls back when a link write carries no delta", () => {
+    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+
+    expect(resolve(content(1, "issue_1", ["ebb/link"]))).toBeNull();
+  });
+
+  it("answers a membership change's delta, and falls back without one", () => {
+    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+
+    expect(
+      resolve(
+        membership(1, "issue_1", "left", ["issue"], {
+          edges: [{ as: "assignee", type: "issue", added: [], removed: ["user_1"] }],
+        }),
+      ),
+    ).toEqual(["issue_1", "user_1"]);
+    expect(resolve(membership(2, "issue_1", "left", ["issue"]))).toBeNull();
+  });
+
+  it("falls back rather than guess from a malformed relation index name", () => {
+    const replica = replicaWith([]);
+
+    expect(
+      resolveFor(replica, "relation:assignee")(content(1, "issue_1", ["ebb/link"])),
+    ).toBeNull();
+    expect(resolveFor(replica, "relation:/issue")(content(1, "issue_1", ["ebb/link"]))).toBeNull();
+    expect(
+      resolveFor(replica, "relation:assignee/")(content(1, "issue_1", ["ebb/link"])),
+    ).toBeNull();
+  });
+});
+
+describe("index resolvers: existence", () => {
+  it("answers the component whose existence the delta moved", () => {
     const resolve = resolveFor(replicaWith([]), "exists:todo/due");
 
     expect(
-      resolve({
-        revision: 1,
-        id: "todo_1",
-        kind: "content",
-        deleted: false,
-        components: ["todo/due"],
-      }),
+      resolve(
+        content(1, "todo_1", ["todo/due"], {
+          existence: { added: ["todo/due"], removed: [] },
+        }),
+      ),
     ).toEqual(["todo/due"]);
     expect(
-      resolve({
-        revision: 2,
-        id: "todo_1",
-        kind: "content",
-        deleted: false,
-        components: ["todo/title"],
-      }),
+      resolve(
+        content(2, "todo_1", ["todo/due"], {
+          existence: { added: [], removed: ["todo/due"] },
+        }),
+      ),
+    ).toEqual(["todo/due"]);
+  });
+
+  it("answers nothing when the delta moved another component's existence", () => {
+    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+
+    expect(
+      resolve(
+        content(1, "todo_1", ["todo/status"], {
+          existence: { added: ["todo/status"], removed: [] },
+        }),
+      ),
     ).toEqual([]);
   });
 
-  it("keys a scope change on the group it entered, and falls back when it left one", () => {
-    const replica = replicaWith([
-      {
-        id: "u_membership",
-        subject_id: "todo_1",
-        component: "ebb/membership",
-        method: "replace",
-        data: {
-          value: { entity_id: "todo_1", group_id: "grp_1" },
-          update_id: "u_membership",
-          hlc: makeHlc(1),
-        },
-      },
-    ]);
-    const resolve = resolveFor(replica, "scope");
+  it("answers a component whose value moved beside another's arrival", () => {
+    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+
+    // One Action can write an existing component and introduce another. The
+    // existence delta names only the arrival, but the content change names both
+    // components, and `todo/due` is covered, so the value write has no other
+    // way to reach the read.
+    expect(
+      resolve(
+        content(1, "todo_1", ["todo/due", "todo/tag"], {
+          existence: { added: ["todo/tag"], removed: [] },
+        }),
+      ),
+    ).toEqual(["todo/due"]);
+  });
+
+  it("reads a content change's component set when no delta moved existence", () => {
+    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+
+    expect(resolve(content(1, "todo_1", ["todo/due"]))).toEqual(["todo/due"]);
+    expect(resolve(content(2, "todo_1", ["todo/title"]))).toEqual([]);
+  });
+
+  it("answers an eviction's existence delta, and falls back only when no delta arrived", () => {
+    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
 
     expect(
-      resolve({
-        revision: 1,
-        id: "todo_1",
-        kind: "membership",
-        deleted: false,
-        membership: "entered",
-        models: ["todo"],
-      }),
+      resolve(
+        membership(1, "todo_1", "left", ["todo"], {
+          existence: { added: [], removed: ["todo/due"] },
+        }),
+      ),
+    ).toEqual(["todo/due"]);
+    // No delta at all: the journal cannot say what the row took with it.
+    expect(resolve(membership(2, "todo_1", "left", ["todo"]))).toBeNull();
+    // A delta that moved another component's existence says `todo/due` stayed.
+    expect(
+      resolve(
+        membership(3, "todo_1", "left", ["todo"], {
+          existence: { added: ["todo/tag"], removed: [] },
+        }),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("index resolvers: scope", () => {
+  const resolve = resolveFor(replicaWith([]), "scope");
+  const side = (groupId: string, entityId = "todo_1") => ({ entityId, groupId });
+
+  it("answers both groups a move touched, deduped", () => {
+    expect(
+      resolve(
+        content(1, "todo_1", ["ebb/membership"], {
+          membership: { before: side("grp_1"), after: side("grp_2") },
+        }),
+      ),
+    ).toEqual(["grp_1", "grp_2"]);
+    // A member refile inside one group moves no group, so the pair is deduped.
+    expect(
+      resolve(
+        content(2, "todo_1", ["ebb/membership"], {
+          membership: { before: side("grp_1"), after: side("grp_1", "todo_2") },
+        }),
+      ),
     ).toEqual(["grp_1"]);
-    // A membership value write may have left a group the journal does not name.
+  });
+
+  it("answers the group an evicted row left", () => {
     expect(
-      resolve({
-        revision: 2,
-        id: "todo_1",
-        kind: "content",
-        deleted: false,
-        components: ["ebb/membership"],
-      }),
-    ).toBeNull();
-    // An evicted row leaves no membership to read.
+      resolve(
+        membership(1, "todo_1", "left", ["todo"], {
+          membership: { before: side("grp_1"), after: null },
+        }),
+      ),
+    ).toEqual(["grp_1"]);
+  });
+
+  it("answers nothing for a content change that left every group alone", () => {
+    expect(resolve(content(1, "todo_1", ["todo/title"]))).toEqual([]);
+    expect(resolve(content(2, "todo_1", ["ebb/membership"]))).toEqual([]);
+  });
+
+  it("falls back only for a membership change that carries no delta", () => {
+    expect(resolve(membership(1, "page_1", "left", ["page"]))).toBeNull();
+    // A delta that moved other things — `parent` here — moved no pair, so no
+    // scoped read is touched.
     expect(
-      resolve({
-        revision: 3,
-        id: "todo_9",
-        kind: "membership",
-        deleted: true,
-        membership: "left",
-        models: ["todo"],
-      }),
-    ).toBeNull();
+      resolve(
+        membership(2, "page_1", "left", ["page"], {
+          edges: [{ as: "parent", type: "page", added: [], removed: ["page_0"] }],
+        }),
+      ),
+    ).toEqual([]);
   });
 });

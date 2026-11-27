@@ -31,22 +31,47 @@ const relationDependency = (as: string, type: string, targetId: string): IndexDe
   key: targetId,
 });
 
+/** The `(as, type)` pair an index name encodes, or `null` for another name. */
+const relationPair = (index: string): { readonly as: string; readonly type: string } | null => {
+  if (!index.startsWith(RELATION_PREFIX)) return null;
+  const parts = index.slice(RELATION_PREFIX.length).split("/");
+  if (parts.length !== 2) return null;
+  const [as, type] = parts;
+  if (as === undefined || type === undefined || as.length === 0 || type.length === 0) {
+    return null;
+  }
+  return { as, type };
+};
+
 /**
- * A link write never names the targets it *dropped*: the journal carries the
- * components a write touched, and the row index holds only the edges that
- * exist after it. A read keyed on a removed target would therefore be missed
- * if the resolver guessed, so a link write answers `null` and dispatch falls
- * back to every reader of the relation — the breadth the `ebb/link` component
- * dependency had before this index existed.
+ * The keys a change moved under one relation index. A content change that names
+ * no `ebb/link` is the changed row itself: a reader keyed on that row follows
+ * its projected values.
  *
- * Every other change is precise. A membership change names the row, so a read
- * that joins it as a target follows it; a read that sources the relation from
- * that row follows the read's own `sources` model set. A content change to a
- * row is that row's id, which is the key of any read that follows it as a
- * joined target.
+ * A link write or a membership change reads the journal's edge delta, which
+ * names both the targets added and the ones dropped for every `(as, type)` on
+ * the row. Only the pair the index encodes answers; the delta carries the
+ * row's whole relation set, so another pair's targets must not leak in. The
+ * changed row stays in the answer because a reader keyed on it follows its
+ * projected values too, and dropping it would turn a narrowed touch into a
+ * miss.
+ *
+ * `null` remains only when the change carries no delta, where every entry that
+ * declared the index is the widest correct answer. A delta with no part for
+ * this pair moved no target under it, so the row alone is exact.
  */
-const relationSubjects = (change: ReplicaChange): readonly string[] | null =>
-  change.kind === "content" && change.components.includes(EBB_COMPONENTS.link) ? null : [change.id];
+const relationSubjects = (change: ReplicaChange, index: string): readonly string[] | null => {
+  const pair = relationPair(index);
+  if (pair === null) return null;
+  if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.link)) {
+    return [change.id];
+  }
+  const delta = change.delta;
+  if (delta === undefined) return null;
+  const moved = delta.edges?.find((part) => part.as === pair.as && part.type === pair.type);
+  if (moved === undefined) return [change.id];
+  return [...new Set([change.id, ...moved.added, ...moved.removed])];
+};
 
 /** The relation a read declared, and the target ids it cares about. */
 interface KeyedRelation {
@@ -61,6 +86,12 @@ interface KeyedRelation {
  * predicate matches nothing and a target-less join keeps its model component,
  * so neither replaces a component dependency.
  *
+ * A relationship join projects a matched source row's edges, so a link write on
+ * that row can move the projection even when the predicate's own targets did
+ * not move. The index keys the predicate's targets, not every source row, so
+ * it can only replace `ebb/link` for a read that reads edges through a
+ * predicate alone; a joining read keeps the component dependency.
+ *
  * A forward one-cardinality join may rely on the predicate's keys because every
  * row that survives the group has its one edge under the pinned relation, and
  * that edge points at one of the group's targets. A many-cardinality join can
@@ -74,10 +105,9 @@ const relationCovers = (
 ): readonly string[] => {
   const covered: string[] = [];
   if (keyed.size === 0) return covered;
-  // Every relationship predicate or forward join reads its source's
-  // `ebb/link`; the index is keyed on the targets, which is what a link change
-  // resolves to (or falls back to).
-  covered.push(EBB_COMPONENTS.link);
+  if (!query.joins.some((join) => join.kind === "relationship")) {
+    covered.push(EBB_COMPONENTS.link);
+  }
   for (const join of query.joins) {
     if (join.kind !== "relationship" || join.direction !== "forward") continue;
     if (join.cardinality !== "one") continue;

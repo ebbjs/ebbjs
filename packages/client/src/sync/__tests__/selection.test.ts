@@ -303,9 +303,10 @@ describe("selection: system reads are planner-supplied", () => {
     expect(structuralReads(joined)).toEqual({
       rows: ["page"],
       indices: [{ index: "relation:content/page", key: "pc_1" }],
-      // A link write falls back to the whole relation, so the intersection of a
-      // predicate and a forward join is keyed on the target, not the model.
-      covered: ["ebb/link", "page_content/*"],
+      // A join projects its source row's edges, so a link write can move the
+      // projection without moving the predicate's target. Only the join's
+      // target model is narrowed away.
+      covered: ["page_content/*"],
     });
 
     const exists = client.note.query().select({ title: true }).has("body").toQuery();
@@ -341,9 +342,9 @@ describe("selection: system reads are planner-supplied", () => {
       .with({ content: true })
       .toQuery();
 
-    // A row from the `title` group may join any target, so only the link read
-    // is keyed; the target model stays the dispatch key for the join.
-    expect(structuralReads(dnf).covered).toEqual(["ebb/link"]);
+    // A row from the `title` group may join any target, so the join's model
+    // stays the dispatch key; `ebb/link` stays too because the join reads it.
+    expect(structuralReads(dnf).covered).toEqual([]);
   });
 
   it("keeps predicate and ordering components in the lease set without projecting them", async () => {
