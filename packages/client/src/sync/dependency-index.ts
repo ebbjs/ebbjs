@@ -20,6 +20,14 @@
  * resolver that cannot name a change's keys is the same answer for the one
  * index it serves, so the entries that declared it are handed the batch.
  *
+ * Missing resolvers. An index name no resolver serves is author error — a
+ * typo'd name, or a family the registry forgot — and the lenient fallback would
+ * hide it behind a batch that always touches the whole declarer set. So a
+ * dispatcher built with {@link ChangeDispatcherOptions.requireResolvers} refuses
+ * such an entry at registration instead, where the author is looking. `null`
+ * from a served resolver is a different answer and keeps the declarer breadth
+ * above: that change could have moved any key.
+ *
  * The index is maintained as a map from entry to what it declared, so removing
  * or reseating an entry costs its own dependencies rather than a scan.
  */
@@ -112,6 +120,26 @@ export interface ChangeJournal {
  */
 export type IndexResolver = (change: ReplicaChange, index: string) => readonly string[] | null;
 
+/**
+ * An entry declared an index no resolver serves, on a dispatcher whose resolver
+ * set was declared complete. Author error: the query names an index the
+ * registry cannot answer for, and the lenient fallback would have reported it
+ * as nothing but a wider batch.
+ */
+export class UnknownIndexError extends Error {
+  /** The index name the entry declared. */
+  readonly index: string;
+  /** The names the dispatcher's resolvers answer to, in registration order. */
+  readonly known: readonly string[];
+
+  constructor(index: string, known: readonly string[]) {
+    super(`no resolver for index "${index}"; known indices: ${known.join(", ")}`);
+    this.name = "UnknownIndexError";
+    this.index = index;
+    this.known = known;
+  }
+}
+
 export interface ChangeDispatcherOptions<T> {
   readonly journal: ChangeJournal;
   /**
@@ -120,9 +148,21 @@ export interface ChangeDispatcherOptions<T> {
    * is how dynamically named indices (`relation:<as>/<type>`,
    * `exists:<component>`) are served without enumerating them. Only names an
    * entry actually declared are resolved, so an unused resolver costs nothing.
-   * A declared index with no resolver is unresolvable, like a `null` answer.
+   * A declared index with no resolver is unresolvable, like a `null` answer —
+   * unless {@link ChangeDispatcherOptions.requireResolvers} says this set is
+   * complete, in which case `add` refuses it.
    */
   readonly indices?: Readonly<Record<string, IndexResolver>>;
+  /**
+   * Declare the resolver set complete: every index an entry declares must have
+   * a resolver — an exact name, or a `*` namespace serving it — and `add`
+   * refuses one that does not with {@link UnknownIndexError}. A registry that
+   * builds its resolvers from a fixed set sets this, so the author of a query
+   * hears about a typo'd index at subscribe time. Left unset, a name nothing
+   * serves stays a `null` answer: every declarer is touched, which is what a
+   * shipped build must do with a name it cannot serve.
+   */
+  readonly requireResolvers?: boolean;
   /** Hand one batch to one touched subscription. */
   readonly onChange: (entry: T, batch: ChangeBatch) => void;
 }
@@ -201,6 +241,8 @@ export const createChangeDispatcher = <T>(
     if (name.endsWith("*")) namespaces.push({ prefix: name.slice(0, -1), resolve });
     else exact.set(name, resolve);
   }
+  /** The names the resolvers answer to, as an author reads them back in an error. */
+  const known = Object.keys(options.indices ?? {});
   /** One lookup per declared index name, memoized for the dispatcher's life. */
   const resolverCache = new Map<string, IndexResolver | null>();
   const resolverFor = (index: string): IndexResolver | null => {
@@ -347,6 +389,14 @@ export const createChangeDispatcher = <T>(
   return {
     add(entry, dependencies) {
       if (closed) return;
+      // Before `drop`, so a refusal leaves the dispatcher exactly as it was and
+      // the entry keeps the indexing it had.
+      const declared = dependencies.indices ?? [];
+      if (options.requireResolvers === true) {
+        for (const { index } of declared) {
+          if (resolverFor(index) === null) throw new UnknownIndexError(index, known);
+        }
+      }
       const seq = entries.get(entry)?.seq ?? (nextSeq += 1);
       drop(entry);
       const indexed: Indexed = {
@@ -355,7 +405,7 @@ export const createChangeDispatcher = <T>(
         models: dependencies.models ?? [],
         sources: dependencies.sources ?? [],
         rows: dependencies.rows ?? [],
-        indices: dependencies.indices ?? [],
+        indices: declared,
       };
       entries.set(entry, indexed);
       for (const component of indexed.components) addTo(byComponent, component, entry);

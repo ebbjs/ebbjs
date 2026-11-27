@@ -12,6 +12,7 @@ import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
 import {
   createChangeDispatcher,
+  UnknownIndexError,
   type ChangeDispatcher,
   type IndexResolver,
   type SubscriptionDependencies,
@@ -347,6 +348,94 @@ describe("dependency-indexed dispatch: correctness", () => {
 
     journal.publish([change("t_1", ["todo/due"], 1)]);
     expect([...notified].sort((a, b) => a - b)).toEqual([1]);
+  });
+
+  it("refuses a declared index no resolver serves when the resolver set is complete", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: { membership: () => [], scope: () => [] },
+      requireResolvers: true,
+      onChange: (entry) => notified.add(entry.id),
+    });
+    dispatcher.add({ id: 2 }, { components: ["note/title"] });
+
+    // The typo is named, and so is everything the dispatcher can serve, so the
+    // author reads the fix out of the error instead of guessing.
+    expect(() =>
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] }),
+    ).toThrow(UnknownIndexError);
+    expect(() =>
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] }),
+    ).toThrow(/relation:typo\/typo/);
+    expect(() =>
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] }),
+    ).toThrow(/membership, scope/);
+
+    // Nothing was indexed for the refused entry, so the dispatcher is exactly
+    // what it was: one entry, and the batch it alone matches reaches it.
+    expect(dispatcher.size()).toBe(1);
+    journal.publish([change("n_1", ["note/title"], 1)]);
+    expect([...notified]).toEqual([2]);
+
+    // A refused reindex keeps the entry's previous indexing: the old component
+    // read still reaches it, and the refused one indexed nothing.
+    expect(() =>
+      dispatcher.add(
+        { id: 2 },
+        {
+          components: ["note/body"],
+          indices: [{ index: "relation:typo/typo", key: "u_1" }],
+        },
+      ),
+    ).toThrow(UnknownIndexError);
+    notified.clear();
+    journal.publish([change("n_1", ["note/title"], 2)]);
+    expect([...notified]).toEqual([2]);
+  });
+
+  it("accepts a declared index a namespace resolver serves", () => {
+    const journal = testJournal();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: { membership: () => [], "relation:*": (change) => [change.id] },
+      requireResolvers: true,
+      onChange: () => {},
+    });
+
+    // A dynamically named index has no entry of its own in the resolver set:
+    // the namespace is what declares it served.
+    expect(() =>
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:author/page", key: "u_1" }] }),
+    ).not.toThrow();
+    expect(dispatcher.size()).toBe(1);
+  });
+
+  it("keeps the declarer breadth when a served resolver answers null", () => {
+    const journal = testJournal();
+    const notified = new Set<number>();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: {
+        membership: () => [],
+        "relation:*": (change) =>
+          change.kind === "content" && change.components.includes("ebb/link") ? null : [change.id],
+      },
+      requireResolvers: true,
+      onChange: (entry) => notified.add(entry.id),
+    });
+    const relation = "relation:author/page";
+    dispatcher.add({ id: 1 }, { indices: [{ index: relation, key: "u_1" }] });
+    dispatcher.add({ id: 2 }, { indices: [{ index: relation, key: "u_2" }] });
+    dispatcher.add({ id: 3 }, { components: ["note/title"] });
+
+    // A link write could have removed any edge, so the resolver's "I cannot
+    // say" is answered with every entry that declared the index — the breadth
+    // #961 gave before the index existed, never fewer.
+    journal.publish([change("p_1", ["ebb/link"], 1)]);
+
+    expect([...notified].sort((a, b) => a - b)).toEqual([1, 2]);
   });
 
   it("treats a declared index with no resolver as unresolvable", () => {

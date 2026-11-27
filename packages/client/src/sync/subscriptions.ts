@@ -890,9 +890,27 @@ export const createSubscriptionRegistry = (
     const claimsMoved = !sameDependencies(entry.dependencies, next);
     const keysMoved = !sameIndices(entry.suppliedIndices, nextIndices);
     if (!claimsMoved && !keysMoved) return;
+    const previousIndices = entry.suppliedIndices;
+    const previousDependencies = entry.dependencies;
+    const previousReads = entry.reads;
+    const previousGeneration = entry.generation;
+    // A refusal undoes the whole move, not just the keys: the entry keeps the
+    // claims, the read set, and the acquire generation it held, so what dispatch
+    // reaches it through is still what the entry says it depends on (#1006).
+    const reindex = (): void => {
+      try {
+        dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      } catch (err) {
+        entry.suppliedIndices = previousIndices;
+        entry.dependencies = previousDependencies;
+        entry.reads = previousReads;
+        entry.generation = previousGeneration;
+        throw err;
+      }
+    };
     if (keysMoved) entry.suppliedIndices = nextIndices;
     if (!claimsMoved) {
-      dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      reindex();
       return;
     }
     entry.dependencies = next;
@@ -907,7 +925,7 @@ export const createSubscriptionRegistry = (
     // names only its row and the keys it supplied, so a new claim cannot move
     // it — only a key-set move does.
     if (entry.kind === "query" || keysMoved) {
-      dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      reindex();
     }
     void acquire(entry as unknown as Entry<unknown>, next, entry.generation);
   };
@@ -1057,9 +1075,15 @@ export const createSubscriptionRegistry = (
     if (caughtUp && !entry.declared) entry.revision = batch.revision;
   };
 
+  // The resolvers here are a fixed set, so the registry can tell an index it
+  // cannot answer for from one it cannot narrow. A development build refuses
+  // such a declaration at subscribe time, where its author is looking; a
+  // production build keeps the fallback, because an extra touch is better than
+  // an app that will not start over a name it cannot serve.
   const dispatcher = createChangeDispatcher<Entry<unknown>>({
     journal: replica,
     indices: createIndexResolvers(replica),
+    requireResolvers: devWatchdog(),
     onChange: notify,
   });
 

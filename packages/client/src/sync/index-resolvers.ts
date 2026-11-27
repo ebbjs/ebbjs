@@ -18,6 +18,13 @@
  * dispatcher then touches every entry that declared the index, which is exactly
  * the breadth the component read set gave before this narrowing existed. The
  * failure mode is an extra touch, never a miss.
+ *
+ * A name no resolver here serves is a different failure: nothing can narrow it,
+ * ever, so the fallback would hide a typo behind a batch that always touches the
+ * whole declarer set. The registry therefore declares this set complete
+ * (`requireResolvers`) and the dispatcher refuses such a declaration at
+ * registration in development (#1006). A name a namespace here serves is
+ * served, whatever follows the prefix.
  */
 
 import type { Replica } from "@ebbjs/storage/replica";
