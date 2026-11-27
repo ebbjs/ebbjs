@@ -25,11 +25,20 @@ import {
   DEFAULT_RESIDENCY_TTL_MS,
   REPLICA_RECORD_FORMAT,
   type Replica,
+  type ReplicaChange,
   type Revision,
 } from "@ebbjs/storage/replica";
 
 import { createClient } from "../client";
-import { createSubscriptionRegistry, type SubscriptionRegistryOptions } from "../subscriptions";
+import { compileReadComponents } from "../query-plan";
+import type { PatchShape } from "../query-execute";
+import {
+  createSubscriptionRegistry,
+  patchableRows,
+  touchesHeldIndices,
+  type HeldIndices,
+  type SubscriptionRegistryOptions,
+} from "../subscriptions";
 import { callApplyAction, flushTasks, platformUpdate, rowComponents, waitFor } from "../test-utils";
 
 /** The heavy component: every other component of the row stays held. */
@@ -1479,5 +1488,110 @@ describe("subscription registry: the lease watchdog (#944)", () => {
     expect(gateSource().replace(/\s+/g, " ")).toBe(
       'typeof process === "undefined" ? false : process.env?.NODE_ENV !== "production"',
     );
+  });
+});
+
+/**
+ * The two pure questions a retained result asks about its own index keys
+ * (#1011): did dispatch touch what I read, and may this batch be patched?
+ *
+ * Dispatch narrows on the same keys, so a result that answered these more
+ * generously than dispatch would keep a `groupIds` it never re-read; one that
+ * answered more narrowly would re-run for a change nobody made.
+ */
+describe("subscriptions: index keys as a result sees them", () => {
+  const content = (id: string, components: readonly string[]): ReplicaChange => ({
+    revision: 1,
+    id,
+    kind: "content",
+    deleted: false,
+    components,
+  });
+
+  const refile = (id: string, entityId: string): ReplicaChange => ({
+    revision: 1,
+    id,
+    kind: "content",
+    deleted: false,
+    components: ["ebb/membership"],
+    delta: {
+      membership: {
+        before: { entityId, groupId: "grp_2" },
+        after: { entityId, groupId: "grp_3" },
+      },
+    },
+  });
+
+  /** A resolver answering `keys` for `ebb/membership` and nothing for anything else. */
+  const keysFor = (
+    keys: readonly string[] | null,
+    held: ReadonlyMap<string, ReadonlySet<string> | null>,
+  ): HeldIndices => ({
+    held,
+    resolve: (index) => (index === "membership" ? keys : []),
+  });
+
+  const holding = (...ids: readonly string[]): ReadonlyMap<string, ReadonlySet<string>> =>
+    new Map([["membership", new Set(ids)]]);
+
+  it("touches for a change that names a key the result holds", () => {
+    expect(
+      touchesHeldIndices(keysFor(["issue_1"], holding("issue_1")), refile("eg_1", "issue_1")),
+    ).toBe(true);
+  });
+
+  it("leaves a change that names no key of its own alone", () => {
+    expect(
+      touchesHeldIndices(keysFor(["issue_9"], holding("issue_1")), refile("eg_9", "issue_9")),
+    ).toBe(false);
+    // `[]` is the resolver saying this is not its index's business at all.
+    expect(
+      touchesHeldIndices(keysFor([], holding("issue_1")), content("issue_1", ["issue/title"])),
+    ).toBe(false);
+  });
+
+  it("touches for a change it cannot narrow against, and for a result holding no set", () => {
+    // The journal cannot say whose filing moved: an extra touch, never a miss.
+    expect(touchesHeldIndices(keysFor(null, holding("issue_1")), refile("eg_1", "issue_1"))).toBe(
+      true,
+    );
+    // A projected result before its first run holds ids nothing has recorded,
+    // so it may hold the one this change names.
+    expect(
+      touchesHeldIndices(
+        keysFor(["issue_1"], new Map([["membership", null]])),
+        refile("eg_1", "issue_1"),
+      ),
+    ).toBe(true);
+    // A collection result declares no membership key at all: the index is not
+    // in its set, so it is never touched for one.
+    expect(touchesHeldIndices(keysFor(["issue_1"], new Map()), refile("eg_1", "issue_1"))).toBe(
+      false,
+    );
+  });
+
+  it("declines a patch for a batch whose refile it holds, and allows one it does not", () => {
+    const shape: PatchShape = {
+      allowed: true,
+      projected: compileReadComponents(["issue/title"]),
+      keys: compileReadComponents([]),
+    };
+    const reads = compileReadComponents(["issue/title"], ["issue"]);
+    const refiled = refile("eg_1", "issue_1");
+    const title = content("issue_1", ["issue/title"]);
+
+    // A title-only batch is the patch the fast path exists for.
+    expect(patchableRows(reads, shape, [title], keysFor(["issue_1"], holding("issue_1")))).toEqual([
+      "issue_1",
+    ]);
+    // The same batch with a held row's refile in it must re-run: splicing would
+    // keep the `groupIds` the refile moved.
+    expect(
+      patchableRows(reads, shape, [title, refiled], keysFor(["issue_1"], holding("issue_1"))),
+    ).toBeNull();
+    // A refile of a row the result does not hold is still not its concern.
+    expect(patchableRows(reads, shape, [title], keysFor(["issue_9"], holding("issue_1")))).toEqual([
+      "issue_1",
+    ]);
   });
 });

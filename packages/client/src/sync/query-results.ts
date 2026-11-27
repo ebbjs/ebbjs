@@ -17,16 +17,25 @@
  * set landed meanwhile; then the result is `stale` and the remount re-runs once.
  *
  * What a result reads is the query's selection (#940): a `rows` result reads
- * the selected components, its predicates and ordering, its joined targets, and
- * membership for `groupIds`; a query with no selection reads its source model
- * whole. A `collection` result holds only the matching id list, so it reads the
- * components its plan names.
+ * the selected components, its predicates and ordering, and its joined targets;
+ * a query with no selection reads its source model whole. A `collection` result
+ * holds only the matching id list, so it reads the components its plan names.
+ *
+ * Membership is a relation, not a component of the row (#1011, ADR 0005). A
+ * projected row's `groupIds` is a projection of the row index, so no read names
+ * `ebb/membership`: a `rows` result declares `membership:<entityId>` for each
+ * row it projects, derived from the ids alone, and a `where("groups", …)`
+ * predicate declares the group's `scope` key. Membership dispatch is therefore
+ * proportional to the results holding the changed entity, and an invite — a new
+ * `ebb/grant` row — reaches no projected result.
  *
  * A change is one of two kinds (#939). A content change names the components it
  * touched, so a result re-runs only when one of them is in its read set. A
  * membership change is a row entering or leaving a model's set and names no
  * component: the model is the dependency, so every read that observes that
- * model's row set re-runs.
+ * model's row set re-runs. Either kind also reaches a projected result through
+ * the membership keys it holds, which is the only dependency a membership row's
+ * own write has.
  *
  * Status is derived, never stored ad hoc:
  *
@@ -51,6 +60,10 @@
 import { componentModel, structuralEqual } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
+import { resolverOf, type IndexDependency, type IndexResolver } from "./dependency-index";
+import { createIndexResolvers } from "./index-resolvers";
+import { keyOf } from "./keys";
+import { MEMBERSHIP_INDEX } from "./membership-index";
 import type { Query } from "./query";
 import { patchResultRows, patchShapeOf, type PatchShape } from "./query-execute";
 import { compileReadComponents, planQuery, type CompiledReadComponents } from "./query-plan";
@@ -58,8 +71,10 @@ import { queryResultKey, selectionReadComponents, structuralReads } from "./sele
 import {
   createSubscriptionRegistry,
   patchableRows,
+  touchesHeldIndices,
   touchesReadSet,
   type Dependency,
+  type HeldIndices,
   type Subscription,
   type SubscriptionRegistry,
   type SubscriptionSpec,
@@ -154,6 +169,19 @@ interface QueryRun<T> {
   /** What a change may rewrite in this result, or re-run (#942). */
   readonly patchShape: PatchShape;
   readonly source: QuerySource<T>;
+  /**
+   * The index keys the query declares that no component re-checks — a
+   * membership predicate's `scope`; fixed for the run's life.
+   */
+  readonly declaredIndices: readonly IndexDependency[];
+  /**
+   * The index keys this result declared for itself (#1011): the membership keys
+   * of the rows it projects, plus the keys the query declared. Kept on the run
+   * so `isRelevant` and the patch gate read the keys it declared rather than a
+   * second, wider test. `null` means an index it observes but cannot narrow
+   * against yet — a projected result before its first run.
+   */
+  indices: ReadonlyMap<string, ReadonlySet<string> | null>;
   /** Each listener, whether it wants the first run, and the revision it joined at. */
   readonly listeners: Map<() => void, { initial: boolean; revision: Revision }>;
   running: boolean;
@@ -228,13 +256,98 @@ export const createQueryResults = (
   replica: Replica,
   subscriptions: SubscriptionRegistry = createSubscriptionRegistry(replica),
 ): QueryResults => {
+  /**
+   * The membership keys a result derives from its ids: one `membership` key per
+   * row it projects. Joined targets are claims, not keys — only a projected row
+   * carries `groupIds`. A `collection` result holds ids it never projects, so it
+   * derives none.
+   */
+  const membershipIndicesFor = <T>(
+    run: QueryRun<T>,
+    result: QueryResult<T>,
+  ): readonly IndexDependency[] => {
+    const data = result.data;
+    if (data === undefined || run.surface !== "rows") return [];
+    // SAFETY: only a `rows` result reaches here, and its `T` carries the id.
+    return (data as readonly { readonly id: string }[]).map((row) => ({
+      index: MEMBERSHIP_INDEX,
+      key: row.id,
+    }));
+  };
+
+  const resolvers = createIndexResolvers(replica);
+  /** One name lookup per index, resolved the one way dispatch resolves it. */
+  const resolverCache = new Map<string, IndexResolver | null>();
+  /**
+   * The keys one change names, memoized for the batch: a result's re-check runs
+   * per touched entry, while the resolver reads the changed row, so without
+   * this a batch costs one read per result instead of one per change (#1011).
+   * The memo follows the replica's revision, because a resolver answers from
+   * the row as it stands now, not as it stood when the change was journaled.
+   */
+  let resolvedAt: Revision | null = null;
+  let resolved = new Map<string, readonly string[] | null>();
+  const resolveIndex = (index: string, change: ReplicaChange): readonly string[] | null => {
+    if (resolvedAt !== replica.revision) {
+      resolvedAt = replica.revision;
+      resolved.clear();
+    }
+    const cacheKey = keyOf(index, String(change.revision));
+    const cached = resolved.get(cacheKey);
+    if (cached !== undefined) return cached;
+    let resolve = resolverCache.get(index);
+    if (resolve === undefined) {
+      resolve = resolverOf(resolvers, index);
+      resolverCache.set(index, resolve);
+    }
+    const keys = resolve === null ? null : resolve(change, index);
+    resolved.set(cacheKey, keys);
+    return keys;
+  };
+
+  /**
+   * The keys a run holds, as `isRelevant` and the patch gate read them: the
+   * keys its query declared, plus the membership keys derived from the ids it
+   * holds. `null` under an index means the result observes that index but holds
+   * no keys for it yet.
+   */
+  const keySetsOf = (
+    surface: QuerySurface,
+    declared: readonly IndexDependency[],
+    memberships: ReadonlySet<string> | null,
+  ): ReadonlyMap<string, ReadonlySet<string> | null> => {
+    const named = new Map<string, string[]>();
+    for (const { index, key } of declared) named.set(index, [...(named.get(index) ?? []), key]);
+    const keys = new Map<string, ReadonlySet<string> | null>(
+      [...named].map(([index, keys]) => [index, new Set(keys)]),
+    );
+    // A `collection` result holds ids it never projects, so it observes no
+    // membership at all; a projected one observes it before its first run too,
+    // and then holds no set it could narrow against.
+    if (surface === "rows") keys.set(MEMBERSHIP_INDEX, memberships);
+    return keys;
+  };
+
+  const indexKeysOf = <T>(run: QueryRun<T>): HeldIndices => ({
+    held: run.indices,
+    resolve: (index, change) => resolveIndex(index, change),
+  });
+
   const isRelevant = <T>(run: QueryRun<T>, from: Revision): boolean => {
     if (replica.revision === from) return false;
     const changes = replica.changesSince(from);
     // An empty window on an advanced revision is a journal gap (a replica
     // `load`), so treat it as relevant; otherwise match each change against
-    // the read set, by component for content and by model for membership.
-    return changes.length === 0 || changes.some((change) => touchesReadSet(run.reads, change));
+    // the read set, by component for content and by model for membership, or
+    // against the index keys the result holds. A membership write carries no
+    // component, so only those keys can find it.
+    const keys = indexKeysOf(run);
+    return (
+      changes.length === 0 ||
+      changes.some(
+        (change) => touchesReadSet(run.reads, change) || touchesHeldIndices(keys, change),
+      )
+    );
   };
 
   const statusOf = <T>(
@@ -381,7 +494,14 @@ export const createQueryResults = (
         });
       }
       writer.seek(revision);
-      writer.depend(dependenciesOf(run, resultOf(writer)));
+      const settled = resultOf(writer);
+      const indices = membershipIndicesFor(run, settled);
+      run.indices = keySetsOf(
+        run.surface,
+        run.declaredIndices,
+        new Set(indices.map(({ key }) => key)),
+      );
+      writer.depend(dependenciesOf(run, settled), indices);
       refresh(writer);
       // A view that saw `stale` must see the settle even when the rows are
       // equal, or it would stay stale.
@@ -482,10 +602,11 @@ export const createQueryResults = (
    *
    * A patch is the run it replaces. `patchShapeOf` has already ruled out an
    * order, a limit, and a join, and `patchableRows` a predicate, an order key, a
-   * join target, a structural key, or a membership change, so the changed rows
-   * keep their place and only their projection is rewritten. The id set and its
-   * order survive, and a row whose projection did not change keeps its array
-   * reference, so a view re-renders only for a visible change.
+   * join target, a structural key, or a change that moved the membership of a
+   * row this result holds, so the changed rows keep their place and only their
+   * projection is rewritten. The id set and its order survive, and a row whose
+   * projection did not change keeps its array reference, so a view re-renders
+   * only for a visible change.
    */
   const patch = <T>(
     writer: SubscriptionWriter<QueryResult<T>>,
@@ -501,7 +622,7 @@ export const createQueryResults = (
     const current = resultOf(writer);
     const data = current.data;
     if (data === undefined) return false;
-    const ids = patchableRows(run.reads, run.patchShape, changes);
+    const ids = patchableRows(run.reads, run.patchShape, changes, indexKeysOf(run));
     if (ids === null || ids.length === 0) return false;
     let patched: unknown;
     try {
@@ -619,6 +740,8 @@ export const createQueryResults = (
         reads: compileReadComponents(readNames, structural.rows),
         patchShape: patchShapeOf(query),
         source,
+        declaredIndices: structural.recheck,
+        indices: keySetsOf(surface, structural.recheck, null),
         listeners: new Map(),
         running: false,
         attached: false,

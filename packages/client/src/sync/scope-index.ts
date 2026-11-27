@@ -5,6 +5,10 @@
  * group id a read names, and a change resolves to the groups its membership
  * delta moved — or to `null` when a membership change carries no delta and the
  * journal cannot say which group it left.
+ *
+ * The group is the read's whole membership dependency: no component names it,
+ * so the key is one `isRelevant` and the patch gate re-check themselves before
+ * trusting a retained result (#1011).
  */
 
 import type { ReplicaChange } from "@ebbjs/storage/replica";
@@ -50,7 +54,7 @@ export const scopeIndexFamily: IndexFamily = {
       if (predicate.kind !== "membership") continue;
       for (const groupId of predicate.anyOf ?? []) indices.push(scopeDependency(groupId));
     }
-    return { indices, covered: [] };
+    return { indices, covered: [], recheck: indices };
   },
   resolver: () => scopeSubjects,
 };

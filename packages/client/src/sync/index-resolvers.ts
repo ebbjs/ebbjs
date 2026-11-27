@@ -45,8 +45,9 @@ export const INDEX_FAMILIES: readonly IndexFamily[] = [
 
 /**
  * The resolvers the subscription registry and the benchmark register. The
- * `membership` resolver serves row subscriptions; each query family answers
- * under the names it declares.
+ * `membership` resolver serves row subscriptions and the membership keys a
+ * projected result declares; each query family answers under the names it
+ * declares.
  */
 export const createIndexResolvers = (replica: Replica): Readonly<Record<string, IndexResolver>> => {
   const resolvers: Record<string, IndexResolver> = {

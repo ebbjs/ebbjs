@@ -315,13 +315,7 @@ describe("with(...) — planning and adjacency", () => {
     ]);
 
     const plan = planQuery(query);
-    expect(selectionReadComponents(query)).toEqual([
-      "issue/*",
-      "ebb/link",
-      "user/*",
-      "page/*",
-      "ebb/membership",
-    ]);
+    expect(selectionReadComponents(query)).toEqual(["issue/*", "ebb/link", "user/*", "page/*"]);
     expect(plan.joins).toEqual(query.joins);
   });
 

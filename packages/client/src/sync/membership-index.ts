@@ -1,10 +1,11 @@
 /**
- * The `membership` index (#961, #1003, #1010).
+ * The `membership` index (#961, #1003, #1010, #1011).
  *
- * Row subscriptions watch the membership row that files the entity they read,
- * so this index is keyed by the member entity id and resolves a membership row
- * change to it. It has no query-side declaration: `structuralReads` describes
- * query reads, and a row subscription declares this dependency itself.
+ * Both readers of a membership row key this index by the member entity id: a
+ * row subscription declares the entity it watches, and a projected-row query
+ * result declares the ids it projects (#1011). Neither states it in the query,
+ * so `structuralReads` does not describe it — the consumer declares the
+ * dependency itself.
  *
  * The resolver answers in three terms:
  *
@@ -26,7 +27,7 @@ import type { Replica, ReplicaChange } from "@ebbjs/storage/replica";
 
 import type { IndexResolver } from "./dependency-index";
 
-/** Row subscriptions: the member entity id a membership row files. */
+/** The derived index a membership row is read by: the member entity id it files. */
 export const MEMBERSHIP_INDEX = "membership";
 
 /** The member entity a membership row files, or `null` when it files nobody. */
@@ -37,9 +38,14 @@ const filedEntity = (row: Entity): string | null => {
 
 /**
  * The member entities a change moved a membership row between, or `null` when
- * the change is a membership row the journal cannot name.
+ * the change is a membership row the journal cannot name. A result holding
+ * entity ids reads the same answer a row subscription does: the keys mean the
+ * ids whose membership moved.
  */
-const membershipSubjects = (replica: Replica, change: ReplicaChange): readonly string[] | null => {
+export const membershipKeys = (
+  replica: Replica,
+  change: ReplicaChange,
+): readonly string[] | null => {
   // A value write elsewhere, or a row entering or leaving a model: not a
   // membership row this index answers for.
   if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.membership)) {
@@ -61,8 +67,8 @@ const membershipSubjects = (replica: Replica, change: ReplicaChange): readonly s
   return change.delta === undefined ? null : [];
 };
 
-/** The resolver serving row subscriptions against a replica's membership rows. */
+/** The resolver serving row subscriptions and query results against a replica's membership rows. */
 export const membershipResolver =
   (replica: Replica): IndexResolver =>
   (change) =>
-    membershipSubjects(replica, change);
+    membershipKeys(replica, change);

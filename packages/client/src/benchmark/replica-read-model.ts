@@ -25,7 +25,13 @@
 
 import { arch, cpus, platform, release } from "node:os";
 import { Type } from "@sinclair/typebox";
-import { carriesComponent, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
+import {
+  carriesComponent,
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
+  type Entity,
+  type Update,
+} from "@ebbjs/core";
 import { createReplica, DEFAULT_JOURNAL_CAPACITY, jsonBytes } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
@@ -36,6 +42,7 @@ import { emptyQuery, type Query } from "../sync/query";
 import { buildReplicaQueryBuilder, type QueryContext } from "../sync/query-builder";
 import { createChangeDispatcher } from "../sync/dependency-index";
 import { createIndexResolvers, relationIndex } from "../sync/index-resolvers";
+import { MEMBERSHIP_INDEX, membershipKeys } from "../sync/membership-index";
 import { createQueryResults, type QuerySource } from "../sync/query-results";
 import { createReplicaExecutor, executePlan, patchResultRows } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";
@@ -64,6 +71,7 @@ import {
   createResidentRows,
   createWorkspace,
   BODY_TYPE,
+  membershipRowId,
   pageId,
   spreadIndices,
   stringField,
@@ -109,6 +117,11 @@ const DISPATCH_CHANGES = 100;
 const DISPATCH_RELATION_SUBSCRIPTIONS = 1_000;
 const DISPATCH_RELATION_CHANGES = 100;
 const DISPATCH_RELATION_POPULAR_TARGETS = 10;
+/**
+ * The membership batch (#1011): projected results that each hold one distinct
+ * page, and one membership write.
+ */
+const DISPATCH_MEMBERSHIP_SUBSCRIPTIONS = 1_000;
 /** The #495 spike's one-pass projection build at the same 10k shape. */
 const SPIKE_PROJECTION_BUILD_MS = 37.0;
 
@@ -1216,6 +1229,229 @@ const measureRelationDispatch = (): {
 
 const relationDispatch = measureRelationDispatch();
 
+/** What one membership batch cost, before and after #1011. */
+interface MembershipDispatchBatch {
+  /** Changes one Action delivered; each case is a single membership write. */
+  readonly changes: number;
+  readonly beforeTouched: number;
+  readonly afterTouched: number;
+  readonly afterLookups: number;
+  /** The keys the membership resolver named for the batch, one answer per change. */
+  readonly resolved: readonly (readonly string[] | null)[];
+}
+
+/**
+ * The membership batch #962's acceptance asks for (#1011, ADR 0005): projected
+ * results that each hold one distinct page, then a batch of its own per case.
+ *
+ * Before #1011 a projected-row result declared `ebb/membership` — an exact
+ * component, so `compileReadComponents` also made it a reader of the `ebb` row
+ * set — and any membership write touched every one of them. A result now
+ * declares `membership:<entityId>` for each row it holds, so a write to an
+ * entity no result holds touches none and a refile touches the one result
+ * holding that entity. Both cases are measured: the number is the point.
+ */
+const measureMembershipDispatch = (): {
+  readonly subscriptions: number;
+  readonly unrelated: MembershipDispatchBatch;
+  readonly refile: MembershipDispatchBatch;
+} => {
+  const subscriptions = Math.min(DISPATCH_MEMBERSHIP_SUBSCRIPTIONS, config.n);
+  /** One distinct projected page per subscription, spread across the id space. */
+  const heldIndexOf = (index: number): number =>
+    Math.floor(((index + 0.5) * config.n) / subscriptions);
+  const heldIndices = Array.from({ length: subscriptions }, (_, index) => heldIndexOf(index));
+  const held = new Set(heldIndices.map(pageId));
+  if (held.size !== subscriptions) {
+    throw new Error(
+      `membership dispatch: ${held.size} distinct pages for ${subscriptions} subscriptions`,
+    );
+  }
+  const refiledIndex = heldIndexOf(Math.floor(subscriptions / 2));
+  const refiledPage = pageId(refiledIndex);
+  // The first page id past the fixture's pages: no subscription can hold it.
+  const unheldPage = pageId(config.n);
+  const unheldRow = membershipRowId(config.n);
+  const refiledGroup = `${WORKSPACE_GROUP_ID}_refile`;
+
+  /** The group a refile moves into, so the membership row names a real group. */
+  benchPosition += 1;
+  const groupUpdateId = `u_bench_${benchPosition}`;
+  replica.ingest(
+    {
+      id: `a_bench_${benchPosition}`,
+      actor_id: "bench",
+      hlc: makeHlc(benchPosition),
+      gsn: benchPosition,
+      updates: [],
+    },
+    [
+      {
+        id: `${groupUpdateId}_create`,
+        subject_id: refiledGroup,
+        model: EBB_MODEL_NAME,
+        method: "create",
+        data: null,
+        hlc: makeHlc(benchPosition),
+      },
+      {
+        id: groupUpdateId,
+        subject_id: refiledGroup,
+        component: EBB_COMPONENTS.group,
+        method: "replace",
+        data: {
+          value: { name: "Refile target" },
+          update_id: groupUpdateId,
+          hlc: makeHlc(benchPosition),
+        },
+      },
+    ],
+    benchPosition,
+  );
+
+  /**
+   * One batch through its own dispatcher pair, so the counters are that
+   * batch's alone: the dependencies a projected result declared before #1011
+   * and the ones it declares now, over subscriptions holding the same pages.
+   */
+  const dispatch = (label: string, writes: readonly Update[]): MembershipDispatchBatch => {
+    const before = createChangeDispatcher<{ readonly id: number }>({
+      journal: replica,
+      onChange: () => {},
+    });
+    const after = createChangeDispatcher<{ readonly id: number }>({
+      journal: replica,
+      indices: createIndexResolvers(replica),
+      onChange: () => {},
+    });
+    for (let index = 0; index < subscriptions; index += 1) {
+      // Before #1011: the membership component, which `compileReadComponents`
+      // also turned into an observation of the `ebb` row set — the model a
+      // membership change names.
+      before.add(
+        { id: index },
+        {
+          components: ["page/title", EBB_COMPONENTS.membership],
+          sources: ["page", EBB_MODEL_NAME],
+        },
+      );
+      // After #1011: the same component read without the membership breadth,
+      // plus the key of the row this result holds.
+      after.add(
+        { id: index },
+        {
+          components: ["page/title"],
+          sources: ["page"],
+          indices: [{ index: MEMBERSHIP_INDEX, key: pageId(heldIndices[index]) }],
+        },
+      );
+    }
+    const from = replica.revision;
+    benchPosition += 1;
+    replica.ingest(
+      {
+        id: `a_membership_${label}_${benchPosition}`,
+        actor_id: "bench",
+        hlc: makeHlc(benchPosition),
+        gsn: benchPosition,
+        updates: [],
+      },
+      writes,
+      benchPosition,
+    );
+    // What the resolver proved the batch moved, read the way dispatch reads it.
+    const resolved = replica.changesSince(from).map((change) => membershipKeys(replica, change));
+    const beforeStats = before.stats();
+    const afterStats = after.stats();
+    before.close();
+    after.close();
+    return {
+      changes: resolved.length,
+      beforeTouched: beforeStats.touched,
+      afterTouched: afterStats.touched,
+      afterLookups: afterStats.lookups,
+      resolved,
+    };
+  };
+
+  benchPosition += 1;
+  const unheldUpdateId = `u_bench_${benchPosition}`;
+  const unrelated = dispatch("unrelated", [
+    {
+      id: `${unheldUpdateId}_create`,
+      subject_id: unheldRow,
+      model: EBB_MODEL_NAME,
+      method: "create",
+      data: null,
+      hlc: makeHlc(benchPosition),
+    },
+    {
+      id: unheldUpdateId,
+      subject_id: unheldRow,
+      component: EBB_COMPONENTS.membership,
+      method: "replace",
+      data: {
+        value: { entity_id: unheldPage, group_id: WORKSPACE_GROUP_ID },
+        update_id: unheldUpdateId,
+        hlc: makeHlc(benchPosition),
+      },
+    },
+  ]);
+
+  benchPosition += 1;
+  const refileUpdateId = `u_bench_${benchPosition}`;
+  const refile = dispatch("refile", [
+    {
+      id: refileUpdateId,
+      subject_id: membershipRowId(refiledIndex),
+      component: EBB_COMPONENTS.membership,
+      method: "replace",
+      data: {
+        value: { entity_id: refiledPage, group_id: refiledGroup },
+        update_id: refileUpdateId,
+        hlc: makeHlc(benchPosition),
+      },
+    },
+  ]);
+
+  const cases = [
+    { label: "an unrelated membership write", batch: unrelated, touched: 0, entity: unheldPage },
+    { label: "a refile", batch: refile, touched: 1, entity: refiledPage },
+  ] as const;
+  for (const { label, batch, touched, entity } of cases) {
+    if (batch.beforeTouched !== subscriptions) {
+      throw new Error(
+        `membership dispatch, ${label}: ${batch.beforeTouched} of ${subscriptions} subscriptions touched before #1011`,
+      );
+    }
+    if (batch.afterTouched !== touched) {
+      throw new Error(
+        `membership dispatch, ${label}: ${batch.afterTouched} subscriptions touched after #1011, expected ${touched}`,
+      );
+    }
+    // A resolver that answered `null` falls back to every reader, and one that
+    // answered nothing leaves the touched count at zero for the wrong reason.
+    const [named] = batch.resolved;
+    if (
+      batch.resolved.length !== 1 ||
+      named === null ||
+      named === undefined ||
+      named.length !== 1 ||
+      named[0] !== entity
+    ) {
+      throw new Error(
+        `membership dispatch, ${label}: the resolver named ${JSON.stringify(
+          batch.resolved,
+        )}, expected ["${entity}"]`,
+      );
+    }
+  }
+
+  return { subscriptions, unrelated, refile };
+};
+
+const membershipDispatch = measureMembershipDispatch();
+
 // ---------------------------------------------------------------------------
 // 8. Memory by category (#966)
 // ---------------------------------------------------------------------------
@@ -1906,7 +2142,8 @@ push(
   "`page/title` over the `page` row set. One Action delivers the whole batch, so the counters are",
   "per batch, not per notification. **Subscriptions touched** is the entries any work happens",
   "for; **index lookups** counts only the dependency lookups; **scan work** is the",
-  "changes × subscriptions pairs a scan of every entry would have examined.",
+  "changes × subscriptions pairs a scan of every entry would have examined. Three batches follow:",
+  "a mixed one, a relationship-heavy one (#961), and a membership one (#1011).",
   "",
   "| measure | value |",
   "| --- | ---: |",
@@ -1934,6 +2171,25 @@ push(
   `| changes in the batch | ${grouped(relationDispatch.changes)} | ${grouped(relationDispatch.changes)} |`,
   `| subscriptions touched / batch | ${grouped(relationDispatch.beforeTouched)} | ${grouped(relationDispatch.afterTouched)} |`,
   `| index lookups / batch | — | ${grouped(relationDispatch.afterLookups)} |`,
+  "",
+  "A membership batch (#1011, ADR 0005): one subscription per distinct projected page, then two",
+  "batches measured one at a time. A projected-row result used to declare `ebb/membership`, and",
+  "because an exact component read also observes its model's row set, it observed the `ebb` row",
+  "set whole — so **an unrelated membership write**, a membership row arriving for an entity no",
+  "subscription holds, touched every subscription, and so did **a refile**, the same `entity_id`",
+  "filed into a second group. A result now declares `membership:<entityId>` for each row it",
+  "holds, so the same two batches resolve to the entity each write moved: the unrelated write",
+  "touches none, and the refile touches exactly the one result holding that page. This measures",
+  "a projected read with no `groups` join; a `groups` join still observes `ebb`, because a group",
+  "row arriving is a membership change naming that model.",
+  "",
+  "| measure | unrelated membership write | refile |",
+  "| --- | ---: | ---: |",
+  `| subscriptions indexed | ${grouped(membershipDispatch.subscriptions)} | ${grouped(membershipDispatch.subscriptions)} |`,
+  `| changes in the batch | ${grouped(membershipDispatch.unrelated.changes)} | ${grouped(membershipDispatch.refile.changes)} |`,
+  `| subscriptions touched / batch, before #1011 | ${grouped(membershipDispatch.unrelated.beforeTouched)} | ${grouped(membershipDispatch.refile.beforeTouched)} |`,
+  `| subscriptions touched / batch, after #1011 | ${grouped(membershipDispatch.unrelated.afterTouched)} | ${grouped(membershipDispatch.refile.afterTouched)} |`,
+  `| index lookups / batch, after #1011 | ${grouped(membershipDispatch.unrelated.afterLookups)} | ${grouped(membershipDispatch.refile.afterLookups)} |`,
   "",
 );
 

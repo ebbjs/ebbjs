@@ -3,9 +3,10 @@
  *
  * One declaration — `.select({ title: true })` on a query,
  * `get(id, { select })` on a row — is the projection, the lease set, and the
- * invalidation key. System components (`ebb/link`, `ebb/membership`, the
- * `groups` join) are planner-supplied: derived from predicates, order, joins,
- * and the `groupIds` every query row carries, never selectable.
+ * invalidation key. System components (`ebb/link`, the `groups` join) are
+ * planner-supplied: derived from predicates, order, and joins, never
+ * selectable. `groupIds` rides on every query row but is a projection of the
+ * membership relation, not a component of the row (#1011).
  */
 
 import { describe, expect, it } from "vitest";
@@ -271,24 +272,30 @@ describe("selection: the projection", () => {
 describe("selection: system reads are planner-supplied", () => {
   const readSet = (query: Query) => selectionReadComponents(query);
 
-  it("adds membership to every query row and never makes it selectable", async () => {
+  it("never declares membership and never makes groupIds selectable", async () => {
     const { client } = harness(schema);
     const selected = client.note.query().select({ title: true }).toQuery();
 
-    expect(selectionReadComponents(selected)).toEqual(["note/title", "ebb/membership"]);
-    expect(readSet(selected)).toEqual(["note/title", "ebb/membership"]);
+    // `groupIds` rides on every query row, but it is read from the row index
+    // and keyed on the ids the result holds (#1011), never declared as a
+    // component a membership write matches.
+    expect(selectionReadComponents(selected)).toEqual(["note/title"]);
+    expect(readSet(selected)).toEqual(["note/title"]);
     // `groupIds` is structural: the shape has no such field to select.
     expect(() => client.note.query().select({ groupIds: true } as never)).toThrow(/groupIds/);
   });
 
-  it("keeps membership in the read set for a groups predicate and the group rows for a join", async () => {
+  it("keys a groups predicate on its scope and a groups join on the group rows", async () => {
     const { client } = harness(schema);
     const filtered = client.note.query().select({ title: true }).where("groups", "g_1").toQuery();
 
-    expect(readSet(filtered)).toEqual(["note/title", "ebb/membership"]);
+    // The predicate's membership dependency is the group's scope index (#961),
+    // which the read also declares structurally.
+    expect(readSet(filtered)).toEqual(["note/title"]);
+    expect(structuralReads(filtered).indices).toEqual([{ index: "scope", key: "g_1" }]);
 
     const joined = client.note.query().select({ title: true }).with({ groups: true }).toQuery();
-    expect(readSet(joined)).toEqual(["note/title", "ebb/membership", "ebb/group"]);
+    expect(readSet(joined)).toEqual(["note/title", "ebb/group"]);
   });
 
   it("derives the index reads a change resolves against (#961)", async () => {
@@ -307,6 +314,7 @@ describe("selection: system reads are planner-supplied", () => {
       // projection without moving the predicate's target. Only the join's
       // target model is narrowed away.
       covered: ["page_content/*"],
+      recheck: [],
     });
 
     const exists = client.note.query().select({ title: true }).has("body").toQuery();
@@ -314,6 +322,7 @@ describe("selection: system reads are planner-supplied", () => {
       rows: ["note"],
       indices: [{ index: "exists:note/body", key: "note/body" }],
       covered: ["note/body"],
+      recheck: [],
     });
 
     const scoped = client.note.query().select({ title: true }).where("groups", "g_1").toQuery();
@@ -321,6 +330,9 @@ describe("selection: system reads are planner-supplied", () => {
       rows: ["note"],
       indices: [{ index: "scope", key: "g_1" }],
       covered: [],
+      // No component re-checks a group scope, so its key is re-checked before a
+      // retained result is trusted.
+      recheck: [{ index: "scope", key: "g_1" }],
     });
   });
 
@@ -329,7 +341,12 @@ describe("selection: system reads are planner-supplied", () => {
     const none = client.page.query().select({ title: true }).where("content", []).toQuery();
 
     // `anyOf: null` matches nothing today and forever, so no change can move it.
-    expect(structuralReads(none)).toEqual({ rows: ["page"], indices: [], covered: [] });
+    expect(structuralReads(none)).toEqual({
+      rows: ["page"],
+      indices: [],
+      covered: [],
+      recheck: [],
+    });
   });
 
   it("keeps a join's target model when another OR group does not pin the relation", async () => {
@@ -356,7 +373,7 @@ describe("selection: system reads are planner-supplied", () => {
       .orderBy("status", "asc")
       .toQuery();
 
-    expect(readSet(query)).toEqual(["note/title", "note/status", "ebb/membership"]);
+    expect(readSet(query)).toEqual(["note/title", "note/status"]);
   });
 
   it("projects nothing for an empty selection on a value view", () => {
@@ -368,7 +385,7 @@ describe("selection: system reads are planner-supplied", () => {
     // follows. The plan still reads the view's component to know which rows
     // exist, which is invalidation rather than projection.
     expect(query.selected).toEqual({ fields: [], components: [] });
-    expect(selectionReadComponents(query)).toEqual(["ebb/group", "ebb/membership"]);
+    expect(selectionReadComponents(query)).toEqual(["ebb/group"]);
   });
 
   it("returns the issues in a group with groupIds present and no membership field", async () => {

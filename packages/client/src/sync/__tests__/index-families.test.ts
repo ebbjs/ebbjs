@@ -167,6 +167,9 @@ describe("index families: one list drives declaration and resolution", () => {
         { index: "scope", key: "grp_1" },
       ],
       covered: ["ebb/link"],
+      // The scope key is the read's whole membership dependency: no component
+      // re-checks it, so a retained result is trusted only once the key agrees.
+      recheck: [{ index: "scope", key: "grp_1" }],
     });
   });
 
@@ -188,6 +191,7 @@ describe("index families: one list drives declaration and resolution", () => {
         { index: "scope", key: "grp_1" },
       ],
       covered: ["ebb/link", "issue/title"],
+      recheck: [{ index: "scope", key: "grp_1" }],
     });
   });
 });

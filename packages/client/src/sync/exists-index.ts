@@ -70,7 +70,9 @@ export const existsIndexFamily: IndexFamily = {
       indices.push(existsDependency(predicate.component));
       covered.push(predicate.component);
     }
-    return { indices, covered };
+    // An existence read keeps its component in the read set, so `isRelevant`
+    // re-checks it there; only the scope key has no component to fall back on.
+    return { indices, covered, recheck: [] };
   },
   resolver: () => existsSubjects,
 };
