@@ -67,9 +67,14 @@ the read path already uses the word correctly.
    predicate declares `scope:<groupId>` (#961) instead. A projected-row result
    and a `groups` join declare `membership:<entityId>` for each row they project
    (#1007). A `groups` join also declares `ebb/group`, because it projects group
-   rows. The dispatcher's `byIndexAll` fallback — a change the resolver cannot
-   describe touches every entry that declared the index — is the breadth the
-   component dependency used to provide.
+   rows. This decision named the dispatcher's `byIndexAll` fallback — a change
+   the resolver cannot describe touches every entry that declared the index — as
+   the breadth the component dependency used to provide.
+   [ADR 0006](0006-change-movement.md) removed that fallback instead: a change
+   now states its whole movement, so the resolver always names the keys and no
+   entry needs to be touched by default. The breadth is gone, not replaced; the
+   differential guard in `dispatch-conservatism.test.ts` is what proves nothing
+   was missed.
 3. **`groupIds` stays on every replica-backed query row.** Unconditional in the
    row's shape, conditional in the dependency. It remains a projection of the
    relation, per row, as today, and not a selection: no caller opts in, and the
