@@ -34,25 +34,25 @@ const existsDependency = (component: string): IndexDependency => ({
 });
 
 /**
- * Every existence index keys on the component it tests. A content change names
- * every component it touched, presence changes included, so its own component
- * set is exact.
- *
- * A membership change carries no component list, so the journal's existence
- * delta says whether the tested component arrived or left — a row entering or
- * leaving a model, or an eviction. The delta is complete (ADR 0006), so a part
- * naming nothing moved no existence at all: the component stayed. Membership of
- * the component's model is carried by the read's `sources` as well, which is
- * what keeps a new row's arrival touching the read.
+ * Every existence index keys on the component it tests, so a change names it
+ * through the component set it touched — presence changes included — or, for a
+ * membership change, through the journal's existence delta. The delta is
+ * complete (ADR 0006), so a part naming nothing moved no existence at all and
+ * the component stayed. Membership of the component's model is carried by the
+ * read's `sources` as well, which is what keeps a new row's arrival touching
+ * the read.
  */
 const existsSubjects = (change: ReplicaChange, index: string): readonly string[] => {
+  const touched =
+    change.kind === "content"
+      ? change.components
+      : [...change.delta.existence.added, ...change.delta.existence.removed];
   const component = existsComponent(index);
-  if (component === null) return [];
-  if (change.kind === "content") {
-    return change.components.includes(component) ? [component] : [];
-  }
-  const { added, removed } = change.delta.existence;
-  return added.includes(component) || removed.includes(component) ? [component] : [];
+  // A name this family cannot parse is one a consumer supplied by hand: every
+  // component the change named is the answer, since any could be the one it
+  // tests. Validating the component against the schema is #1028.
+  if (component === null) return [...new Set(touched)];
+  return touched.includes(component) ? [component] : [];
 };
 
 export const existsIndexFamily: IndexFamily = {

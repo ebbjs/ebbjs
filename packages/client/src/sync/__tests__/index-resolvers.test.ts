@@ -392,6 +392,23 @@ describe("index resolvers: existence", () => {
       ),
     ).toEqual([]);
   });
+
+  it("answers every named component for an existence index name it cannot parse", () => {
+    // The component is unreadable, so any component the change named could be
+    // the one it tests: a superset, never nobody. Validating the component
+    // against the schema is #1028.
+    expect(resolveFor("exists:")(content(1, "todo_1", ["todo/due", "todo/tag"]))).toEqual([
+      "todo/due",
+      "todo/tag",
+    ]);
+    expect(
+      resolveFor("exists:")(
+        membership(1, "todo_1", "left", ["todo"], {
+          existence: { added: [], removed: ["todo/due"] },
+        }),
+      ),
+    ).toEqual(["todo/due"]);
+  });
 });
 
 describe("index resolvers: scope", () => {
