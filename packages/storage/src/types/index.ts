@@ -12,6 +12,7 @@ export type { CursorRecord, CursorStore, SeedMarker } from "./cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./replica-store";
 export type {
   ChangeDelta,
+  ChangeEdge,
   ContentChange,
   MembershipChange,
   MembershipQuery,

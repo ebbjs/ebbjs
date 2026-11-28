@@ -14,7 +14,12 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica, type ReplicaChange } from "@ebbjs/storage/replica";
+import {
+  createReplica,
+  type ChangeDelta,
+  type Replica,
+  type ReplicaChange,
+} from "@ebbjs/storage/replica";
 import { defineModel, defineSchema, e } from "@ebbjs/schema";
 
 import { createClient } from "../client";
@@ -92,6 +97,36 @@ const changeAt = (replica: Replica, revision: number): ReplicaChange => {
   return change;
 };
 
+/**
+ * Nothing moved. Every journal entry states all three parts, so a fixture that
+ * names only the part its case is about spreads this and overrides that part.
+ */
+const noMovement: ChangeDelta = {
+  edges: [],
+  existence: { added: [], removed: [] },
+  membership: { before: null, after: null },
+};
+
+/**
+ * A change with no delta at all — the shape the type now forbids and #1025
+ * deletes the fallback for. Only the transitional fallback tests build one.
+ */
+const stateless = (
+  revision: number,
+  id: string,
+  shape:
+    | { readonly kind: "content"; readonly components: readonly string[] }
+    | { readonly kind: "membership"; readonly models: readonly string[] },
+): ReplicaChange =>
+  ({
+    revision,
+    id,
+    deleted: shape.kind === "membership",
+    ...(shape.kind === "content"
+      ? { kind: "content", components: shape.components }
+      : { kind: "membership", membership: "left", models: shape.models }),
+  }) as ReplicaChange;
+
 /** The resolver for one index name, as the dispatcher would look it up. */
 const resolveFor = (replica: Replica, index: string) => {
   const resolvers = createIndexResolvers(replica);
@@ -146,6 +181,7 @@ describe("membership resolver: the three keys", () => {
         membership: "left",
         models: ["ebb"],
         delta: {
+          ...noMovement,
           membership: {
             before: { entityId: "todo_1", groupId: "grp_1" },
             after: null,
@@ -218,35 +254,22 @@ describe("membership resolver: the three keys", () => {
     expect(resolve(changeAt(replica, 3))).toEqual([]);
   });
 
-  it("answers cannot say for a membership row the journal gives no delta", () => {
+  it("answers cannot say only for a change the journal gives no delta (#1025)", () => {
     const replica = createReplica();
     const resolve = resolveFor(replica, MEMBERSHIP_INDEX);
 
+    // Transitional: every journal path now states a movement, so these shapes
+    // are unreachable from the replica and #1025 deletes the branch.
+    expect(resolve(stateless(1, "m_missing", { kind: "membership", models: ["ebb"] }))).toBeNull();
     expect(
-      resolve({
-        revision: 1,
-        id: "m_missing",
-        kind: "membership",
-        deleted: true,
-        membership: "left",
-        models: ["ebb"],
-      }),
-    ).toBeNull();
-    expect(
-      resolve({
-        revision: 2,
-        id: "m_missing",
-        kind: "content",
-        deleted: false,
-        components: ["ebb/membership"],
-      }),
+      resolve(stateless(2, "m_missing", { kind: "content", components: ["ebb/membership"] })),
     ).toBeNull();
   });
 
-  it("answers cannot say for a readable row the journal gives no delta", () => {
+  it("answers no key for a readable row that filed nobody", () => {
     const replica = createReplica();
     // A component-less row: it files nobody and nothing about it moved, so the
-    // journal records no delta at all.
+    // journal states an empty movement.
     ingest(
       replica,
       action(1, [
@@ -263,11 +286,10 @@ describe("membership resolver: the three keys", () => {
 
     const change = changeAt(replica, 1);
     expect(replica.get("m_bare")).toBeDefined();
-    expect(change.delta).toBeUndefined();
-    // The row proves only the side it is on now. Without a delta the journal
-    // cannot say whether it filed an entity before, so the answer is the
-    // fallback over every entry rather than a miss.
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(change)).toBeNull();
+    expect(change.delta).toEqual(noMovement);
+    // No part moved, so no key exists for this change rather than a fallback
+    // over every entry.
+    expect(resolveFor(replica, MEMBERSHIP_INDEX)(change)).toEqual([]);
   });
 });
 
@@ -333,14 +355,15 @@ describe("membership dispatch: a departure's breadth", () => {
     two.unsubscribe();
   });
 
-  it("touches every row subscription that declared the index when the change carries no delta", async () => {
+  it("touches nobody for a bare `ebb` row that filed nothing", async () => {
     const client = makeClient();
     await seed(client);
     const one = await watch(client, "todo_1");
     const two = await watch(client, "todo_2");
 
     // An `ebb` row with no component: neither its arrival nor its departure
-    // journals a delta, so the journal cannot say whom it filed.
+    // moved a pair, and the change states that much (#1024), so no row
+    // subscription's filing can have changed.
     client.replica.ingest(
       {
         id: "a_bare",
@@ -363,16 +386,16 @@ describe("membership dispatch: a departure's breadth", () => {
     );
     await flushTasks();
 
-    expect(touched(client)).toBe(2);
-    expect(one.fired).toHaveLength(1);
-    expect(two.fired).toHaveLength(1);
+    expect(touched(client)).toBe(0);
+    expect(one.fired).toHaveLength(0);
+    expect(two.fired).toHaveLength(0);
 
     client.replica.evict(["m_bare"]);
     await flushTasks();
 
-    expect(touched(client)).toBe(2);
-    expect(one.fired).toHaveLength(2);
-    expect(two.fired).toHaveLength(2);
+    expect(touched(client)).toBe(0);
+    expect(one.fired).toHaveLength(0);
+    expect(two.fired).toHaveLength(0);
 
     one.unsubscribe();
     two.unsubscribe();

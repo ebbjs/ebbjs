@@ -11,7 +11,12 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica, type ReplicaChange } from "@ebbjs/storage/replica";
+import {
+  createReplica,
+  type ChangeDelta,
+  type Replica,
+  type ReplicaChange,
+} from "@ebbjs/storage/replica";
 
 import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
@@ -90,6 +95,13 @@ const queries = (): readonly Query[] => {
   ];
 };
 
+/** The movement a change that moved nothing states. */
+const noMovement: ChangeDelta = {
+  edges: [],
+  existence: { added: [], removed: [] },
+  membership: { before: null, after: null },
+};
+
 /** A change that names one declared index's key, per family. */
 const changeNaming = (dependency: IndexDependency): ReplicaChange => {
   if (dependency.index.startsWith("exists:")) {
@@ -99,6 +111,7 @@ const changeNaming = (dependency: IndexDependency): ReplicaChange => {
       kind: "content",
       deleted: false,
       components: [dependency.key],
+      delta: noMovement,
     };
   }
   if (dependency.index === "scope") {
@@ -110,6 +123,7 @@ const changeNaming = (dependency: IndexDependency): ReplicaChange => {
       membership: "entered",
       models: ["todo"],
       delta: {
+        ...noMovement,
         membership: { before: null, after: { entityId: "todo_1", groupId: dependency.key } },
       },
     };
@@ -120,6 +134,7 @@ const changeNaming = (dependency: IndexDependency): ReplicaChange => {
     kind: "content",
     deleted: false,
     components: ["user/name"],
+    delta: noMovement,
   };
 };
 

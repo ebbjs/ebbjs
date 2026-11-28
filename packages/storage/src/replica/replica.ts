@@ -269,11 +269,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     id: string,
     deleted: boolean,
     components: readonly string[],
-    delta?: ChangeDelta,
+    delta: ChangeDelta,
   ): void => {
     revision += 1;
-    const change: ReplicaChange = { revision, id, kind: "content", deleted, components };
-    journal.push(delta === undefined ? change : { ...change, delta });
+    const change: ReplicaChange = { revision, id, kind: "content", deleted, components, delta };
+    journal.push(change);
     trimJournal();
   };
 
@@ -286,11 +286,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     deleted: boolean,
     membership: MembershipTransition,
     models: readonly string[],
-    delta?: ChangeDelta,
+    delta: ChangeDelta,
   ): void => {
     revision += 1;
-    const change: ReplicaChange = { revision, id, kind: "membership", deleted, membership, models };
-    journal.push(delta === undefined ? change : { ...change, delta });
+    const change: ReplicaChange = {
+      revision,
+      id,
+      kind: "membership",
+      deleted,
+      membership,
+      models,
+      delta,
+    };
+    journal.push(change);
     trimJournal();
   };
 
