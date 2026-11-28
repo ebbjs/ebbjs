@@ -439,13 +439,15 @@ export const touchesHeldIndices = (keys: HeldIndices, change: ReplicaChange): bo
  * because a row entering, leaving, or refiling can change the set the result is
  * drawn from. A change the entry does not read is not its concern and does not
  * block a patch — unless it moved one of the result's index keys, in which case
- * a splice would keep the projection it rewrote.
+ * a splice would keep the projection it rewrote. `indices` is required for that
+ * reason: a caller that omitted it would silently lose the membership gate and
+ * patch past a stale `groupIds`.
  */
 export const patchableRows = (
   reads: ReadSet,
   shape: PatchShape,
   changes: readonly ReplicaChange[],
-  indices?: HeldIndices,
+  indices: HeldIndices,
 ): readonly string[] | null => {
   if (!shape.allowed) return null;
   const ids = new Set<string>();
@@ -454,7 +456,7 @@ export const patchableRows = (
       // A refile names a membership row, not the projected row, so the read set
       // does not match it: only the result's own keys do. A change that moved
       // none is not this result's concern.
-      if (indices !== undefined && touchesHeldIndices(indices, change)) return null;
+      if (touchesHeldIndices(indices, change)) return null;
       continue;
     }
     if (change.kind !== "content" || change.deleted) return null;
