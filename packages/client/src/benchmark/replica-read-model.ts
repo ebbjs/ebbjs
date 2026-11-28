@@ -1136,8 +1136,8 @@ const measureRelationDispatch = (): {
   const changes = sourceIndices.length;
   /**
    * A popular target the source does not already point at, so every write moves
-   * an edge and journals a delta. A no-op write would carry none and fall back
-   * to every reader of the relation.
+   * an edge and journals a delta. A no-op write states an empty movement, which
+   * resolves to the changed row alone and would shrink the batch's real breadth.
    */
   const addedTargetFor = (index: number): string => {
     const source = pageId(sourceIndices[index] ?? 0);
@@ -1154,7 +1154,7 @@ const measureRelationDispatch = (): {
   });
   const after = createChangeDispatcher<{ readonly id: number }>({
     journal: replica,
-    indices: createIndexResolvers(replica),
+    indices: createIndexResolvers(),
     onChange: () => {},
   });
   for (let index = 0; index < subscriptions; index += 1) {
@@ -1924,8 +1924,9 @@ push(
   "its own target, and the journal's edge delta names the target each write added, so the batch",
   "resolves to those ten targets plus each changed source row — which the fixture keeps outside",
   "the watched set, so the row key adds nothing.",
-  "#961's resolver answered `null` for a link write and would fall back to every reader here. A read",
-  "that also projects the relation keeps `ebb/link` in its dispatch set (#1005), because a join",
+  "#961's resolver answered `null` for a link write and fell back to every reader here; with the",
+  "movement stated on every change (ADR 0006) it answers the moved targets and needs no fallback. A",
+  "read that also projects the relation keeps `ebb/link` in its dispatch set (#1005), because a join",
   "projects the source row's edges, so this batch measures the predicate read.",
   "",
   "| measure | before #961 | after #961/#1005 |",

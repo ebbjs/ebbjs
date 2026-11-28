@@ -3,8 +3,7 @@
  *
  * A membership predicate reads one group's scope. The index is keyed by the
  * group id a read names, and a change resolves to the groups its membership
- * delta moved — or to `null` when a membership change carries no delta and the
- * journal cannot say which group it left.
+ * delta moved.
  */
 
 import type { ReplicaChange } from "@ebbjs/storage/replica";
@@ -26,17 +25,12 @@ const scopeDependency = (groupId: string): IndexDependency => ({
  * row filed on each side, so a move touches readers of the group it entered and
  * the one it left, and an eviction touches the one it left.
  *
- * A delta omits a part nothing moved in, so a change carrying no membership
- * part moved no pair and no scoped read needs it. A membership change with no
- * delta at all could have left a group the journal does not name, and answers
- * `null` so dispatch falls back to every scoped read.
+ * The delta is complete (ADR 0006), so a change whose membership part names no
+ * side moved no pair and no scoped read needs it.
  */
-const scopeSubjects = (change: ReplicaChange): readonly string[] | null => {
-  const membership = change.delta?.membership;
-  if (membership === undefined) {
-    return change.kind === "content" || change.delta !== undefined ? [] : null;
-  }
-  const groups = [membership.before?.groupId, membership.after?.groupId].filter(
+const scopeSubjects = (change: ReplicaChange): readonly string[] => {
+  const { before, after } = change.delta.membership;
+  const groups = [before?.groupId, after?.groupId].filter(
     (groupId): groupId is string => groupId !== undefined,
   );
   return [...new Set(groups)];

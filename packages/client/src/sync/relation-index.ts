@@ -43,6 +43,13 @@ const relationPair = (index: string): { readonly as: string; readonly type: stri
   return { as, type };
 };
 
+/** Every target any relation pair on this change moved, plus the changed row. */
+const everyMovedTarget = (change: ReplicaChange): readonly string[] => {
+  const targets: string[] = [change.id];
+  for (const part of change.delta.edges) targets.push(...part.added, ...part.removed);
+  return [...new Set(targets)];
+};
+
 /**
  * The keys a change moved under one relation index. A content change that names
  * no `ebb/link` is the changed row itself: a reader keyed on that row follows
@@ -56,19 +63,19 @@ const relationPair = (index: string): { readonly as: string; readonly type: stri
  * projected values too, and dropping it would turn a narrowed touch into a
  * miss.
  *
- * `null` remains only when the change carries no delta, where every entry that
- * declared the index is the widest correct answer. A delta with no part for
- * this pair moved no target under it, so the row alone is exact.
+ * The delta is complete (ADR 0006), so a pair it names nothing under moved no
+ * target and the row alone is exact. A name this family cannot parse is one a
+ * consumer supplied by hand: every target the delta names is the answer, since
+ * any of them could be the pair it meant. Validating a `(as, type)` against the
+ * schema is #1028.
  */
-const relationSubjects = (change: ReplicaChange, index: string): readonly string[] | null => {
+const relationSubjects = (change: ReplicaChange, index: string): readonly string[] => {
   const pair = relationPair(index);
-  if (pair === null) return null;
+  if (pair === null) return everyMovedTarget(change);
   if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.link)) {
     return [change.id];
   }
-  const delta = change.delta;
-  if (delta === undefined) return null;
-  const moved = delta.edges?.find((part) => part.as === pair.as && part.type === pair.type);
+  const moved = change.delta.edges.find((part) => part.as === pair.as && part.type === pair.type);
   if (moved === undefined) return [change.id];
   return [...new Set([change.id, ...moved.added, ...moved.removed])];
 };

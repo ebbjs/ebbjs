@@ -142,7 +142,7 @@ export {
   type QuerySurface,
 } from "./sync/query-results";
 
-export { type IndexDependency } from "./sync/dependency-index";
+export { UnknownIndexError, type IndexDependency } from "./sync/dependency-index";
 export {
   createSubscriptionRegistry,
   touchesReadSet,

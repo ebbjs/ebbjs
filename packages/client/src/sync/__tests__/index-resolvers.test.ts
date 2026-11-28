@@ -6,20 +6,14 @@
  * keys it may have moved. Dispatch then touches the subscriptions whose key
  * changed instead of every subscription that reads the component.
  *
- * Every journal entry states its whole movement (#1024), so the fixtures here
- * build complete deltas. The `null` fallback these resolvers still carry is
- * reached only by the `stateless` fixtures and is deleted by #1025.
+ * Every journal entry states its whole movement (ADR 0006), so every resolver
+ * here answers a key set and none has a "cannot say" branch.
  */
 
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import {
-  createReplica,
-  type ChangeDelta,
-  type Replica,
-  type ReplicaChange,
-} from "@ebbjs/storage/replica";
+import { type ChangeDelta, type ReplicaChange } from "@ebbjs/storage/replica";
 
 import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
@@ -204,26 +198,9 @@ describe("index resolvers at the client seam", () => {
   });
 });
 
-/** A replica seeded directly, for the resolver unit tests. */
-const replicaWith = (updates: readonly Update[], position = 1): Replica => {
-  const replica = createReplica();
-  replica.ingest(
-    {
-      id: `a_${position}`,
-      actor_id: "actor_1",
-      hlc: makeHlc(position),
-      gsn: position,
-      updates: [],
-    },
-    updates,
-    position,
-  );
-  return replica;
-};
-
 /** The resolver for one index name, as the dispatcher would look it up. */
-const resolveFor = (replica: Replica, index: string) => {
-  const resolvers = createIndexResolvers(replica);
+const resolveFor = (index: string) => {
+  const resolvers = createIndexResolvers();
   const exact = resolvers[index];
   if (exact !== undefined) return (change: Parameters<typeof exact>[0]) => exact(change, index);
   for (const [name, resolve] of Object.entries(resolvers)) {
@@ -274,35 +251,15 @@ const membership = (
   delta: { ...noMovement, ...delta },
 });
 
-/**
- * A change with no delta at all — the shape the type now forbids and #1025
- * deletes the fallback for. Only the transitional fallback tests below build
- * one, so the rest of the file is written against the complete shape.
- */
-const stateless = (
-  revision: number,
-  id: string,
-  transition: "entered" | "left" | "changed-model",
-  models: readonly string[],
-): ReplicaChange =>
-  ({
-    revision,
-    id,
-    kind: "membership",
-    deleted: transition === "left",
-    membership: transition,
-    models,
-  }) as ReplicaChange;
-
 describe("index resolvers: observation", () => {
   it("keeps the changed row for a relation change that names no edge", () => {
-    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+    const resolve = resolveFor("relation:assignee/issue");
 
     expect(resolve(content(1, "user_1", ["user/name"]))).toEqual(["user_1"]);
   });
 
   it("answers a link write's moved targets under the relation the index names", () => {
-    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+    const resolve = resolveFor("relation:assignee/issue");
 
     expect(
       resolve(
@@ -317,7 +274,7 @@ describe("index resolvers: observation", () => {
   });
 
   it("answers only the changed row when the delta moved another relation", () => {
-    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+    const resolve = resolveFor("relation:assignee/issue");
 
     expect(
       resolve(
@@ -328,16 +285,8 @@ describe("index resolvers: observation", () => {
     ).toEqual(["issue_1"]);
   });
 
-  it("falls back only for the prefix-compatible shape with no delta (#1025)", () => {
-    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
-
-    // Transitional: every journal path now states a movement, so this shape is
-    // unreachable from the replica and #1025 deletes the branch.
-    expect(resolve(stateless(1, "issue_1", "left", ["issue"]))).toBeNull();
-  });
-
-  it("answers a membership change's delta, and falls back without one", () => {
-    const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
+  it("answers a membership change's edge delta", () => {
+    const resolve = resolveFor("relation:assignee/issue");
 
     expect(
       resolve(
@@ -346,26 +295,30 @@ describe("index resolvers: observation", () => {
         }),
       ),
     ).toEqual(["issue_1", "user_1"]);
-    // Transitional until #1025: a delta that moved no edge says so itself.
+    // A departure whose delta moved no edge names only the row it was.
     expect(resolve(membership(2, "issue_1", "left", ["issue"]))).toEqual(["issue_1"]);
   });
 
-  it("falls back rather than guess from a malformed relation index name", () => {
-    const replica = replicaWith([]);
+  it("answers every moved target for a relation index name it cannot parse", () => {
+    const change = content(1, "issue_1", ["ebb/link"], {
+      edges: [
+        { as: "tags", type: "issue", added: ["label_1"], removed: [] },
+        { as: "parent", type: "page", added: [], removed: ["page_0"] },
+      ],
+    });
 
-    expect(
-      resolveFor(replica, "relation:assignee")(content(1, "issue_1", ["ebb/link"])),
-    ).toBeNull();
-    expect(resolveFor(replica, "relation:/issue")(content(1, "issue_1", ["ebb/link"]))).toBeNull();
-    expect(
-      resolveFor(replica, "relation:assignee/")(content(1, "issue_1", ["ebb/link"])),
-    ).toBeNull();
+    // The pair is unreadable, so any moved target could be the key the read
+    // declared: a superset, never the row alone. Validating the pair against
+    // the schema is #1028.
+    for (const index of ["relation:assignee", "relation:/issue", "relation:assignee/"]) {
+      expect(resolveFor(index)(change)).toEqual(["issue_1", "label_1", "page_0"]);
+    }
   });
 });
 
 describe("index resolvers: existence", () => {
   it("answers the component whose existence the delta moved", () => {
-    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+    const resolve = resolveFor("exists:todo/due");
 
     expect(
       resolve(
@@ -384,7 +337,7 @@ describe("index resolvers: existence", () => {
   });
 
   it("answers nothing when the delta moved another component's existence", () => {
-    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+    const resolve = resolveFor("exists:todo/due");
 
     expect(
       resolve(
@@ -396,7 +349,7 @@ describe("index resolvers: existence", () => {
   });
 
   it("answers a component whose value moved beside another's arrival", () => {
-    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+    const resolve = resolveFor("exists:todo/due");
 
     // One Action can write an existing component and introduce another. The
     // existence delta names only the arrival, but the content change names both
@@ -412,14 +365,14 @@ describe("index resolvers: existence", () => {
   });
 
   it("reads a content change's component set when no delta moved existence", () => {
-    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+    const resolve = resolveFor("exists:todo/due");
 
     expect(resolve(content(1, "todo_1", ["todo/due"]))).toEqual(["todo/due"]);
     expect(resolve(content(2, "todo_1", ["todo/title"]))).toEqual([]);
   });
 
   it('answers an eviction\'s existence delta, and reads an empty part as "nothing stayed"', () => {
-    const resolve = resolveFor(replicaWith([]), "exists:todo/due");
+    const resolve = resolveFor("exists:todo/due");
 
     expect(
       resolve(
@@ -439,10 +392,27 @@ describe("index resolvers: existence", () => {
       ),
     ).toEqual([]);
   });
+
+  it("answers every named component for an existence index name it cannot parse", () => {
+    // The component is unreadable, so any component the change named could be
+    // the one it tests: a superset, never nobody. Validating the component
+    // against the schema is #1028.
+    expect(resolveFor("exists:")(content(1, "todo_1", ["todo/due", "todo/tag"]))).toEqual([
+      "todo/due",
+      "todo/tag",
+    ]);
+    expect(
+      resolveFor("exists:")(
+        membership(1, "todo_1", "left", ["todo"], {
+          existence: { added: [], removed: ["todo/due"] },
+        }),
+      ),
+    ).toEqual(["todo/due"]);
+  });
 });
 
 describe("index resolvers: scope", () => {
-  const resolve = resolveFor(replicaWith([]), "scope");
+  const resolve = resolveFor("scope");
   const side = (groupId: string, entityId = "todo_1") => ({ entityId, groupId });
 
   it("answers both groups a move touched, deduped", () => {

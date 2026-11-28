@@ -16,9 +16,13 @@
  *
  * Gaps. A revision below the retained window, or an empty batch on an advanced
  * revision (a replica `load` replaces the journal), cannot be narrowed against:
- * every subscription may have changed, so every one is handed the batch. A
- * resolver that cannot name a change's keys is the same answer for the one
- * index it serves, so the entries that declared it are handed the batch.
+ * every subscription may have changed, so every one is handed the batch.
+ *
+ * Missing resolvers. Every change states its whole movement (ADR 0006), so a
+ * resolver always names the keys under the index it serves, and an index name
+ * with no resolver is author error rather than an answer: a typo'd name, or a
+ * family the registry forgot. The dispatcher refuses such a declaration in
+ * `add`, where its author is looking, with {@link UnknownIndexError}.
  *
  * The index is maintained as a map from entry to what it declared, so removing
  * or reseating an entry costs its own dependencies rather than a scan.
@@ -102,15 +106,53 @@ export interface ChangeJournal {
 }
 
 /**
- * The keys one change names under one derived index, or `null` when the change
- * cannot be resolved against the index's current state — a link write whose
- * removed target the journal does not name, a row an eviction left no trace of.
- * `null` is not "no keys": every entry that declared the index is touched, the
- * same breadth the component read set gave before the index existed. The index
- * name is passed so a namespace resolver (one function serving every
+ * The keys one change names under one derived index. A resolver always names a
+ * key set: every change states the whole movement it carried (ADR 0006), so
+ * there is no "cannot say" left to answer. An empty set means the change moved
+ * nothing under that index and dispatch touches nobody for it. The index name
+ * is passed so a namespace resolver (one function serving every
  * `relation:<as>/<type>`) can answer for the index it was asked about.
+ *
+ * A resolver may answer a superset — the changed row, every touched component —
+ * where a covered dependency needs it. Totality is not minimality.
  */
-export type IndexResolver = (change: ReplicaChange, index: string) => readonly string[] | null;
+export type IndexResolver = (change: ReplicaChange, index: string) => readonly string[];
+
+/**
+ * An entry declared an index no resolver serves. Author error: the query names
+ * an index the registry cannot answer for, ever, so the lenient fallback would
+ * have reported it as nothing but a wider batch.
+ */
+export class UnknownIndexError extends Error {
+  /** The index name the entry declared. */
+  readonly index: string;
+  /** The names the dispatcher's resolvers answer to, in registration order. */
+  readonly known: readonly string[];
+  /**
+   * The subscription that declared it, when the refusal is re-stated for one.
+   * The dispatcher indexes an opaque entry, so only the registry that built it
+   * can say which subscription an author has to go and fix; it names it on the
+   * way out. `null` for a dispatcher a test drives by hand.
+   */
+  readonly subject: string | null;
+
+  constructor(index: string, known: readonly string[], subject: string | null = null) {
+    const declared = subject === null ? "" : ` declared by "${subject}"`;
+    super(`no resolver for index "${index}"${declared}; known indices: ${known.join(", ")}`);
+    this.name = "UnknownIndexError";
+    this.index = index;
+    this.known = known;
+    this.subject = subject;
+  }
+}
+
+/**
+ * The same refusal, naming the subscription that declared it. A dispatcher sees
+ * an opaque entry, so the registry adds the key its author wrote; the dispatch
+ * seam stays the one place the check runs.
+ */
+export const knownIndexErrorFor = (error: UnknownIndexError, subject: string): UnknownIndexError =>
+  new UnknownIndexError(error.index, error.known, subject);
 
 export interface ChangeDispatcherOptions<T> {
   readonly journal: ChangeJournal;
@@ -120,7 +162,7 @@ export interface ChangeDispatcherOptions<T> {
    * is how dynamically named indices (`relation:<as>/<type>`,
    * `exists:<component>`) are served without enumerating them. Only names an
    * entry actually declared are resolved, so an unused resolver costs nothing.
-   * A declared index with no resolver is unresolvable, like a `null` answer.
+   * A declared index with no resolver is refused by {@link ChangeDispatcher.add}.
    */
   readonly indices?: Readonly<Record<string, IndexResolver>>;
   /** Hand one batch to one touched subscription. */
@@ -201,20 +243,22 @@ export const createChangeDispatcher = <T>(
     if (name.endsWith("*")) namespaces.push({ prefix: name.slice(0, -1), resolve });
     else exact.set(name, resolve);
   }
+  /** The names the resolvers answer to, as an author reads them back in an error. */
+  const known = Object.keys(options.indices ?? {});
   /** One lookup per declared index name, memoized for the dispatcher's life. */
-  const resolverCache = new Map<string, IndexResolver | null>();
-  const resolverFor = (index: string): IndexResolver | null => {
+  const resolverCache = new Map<string, IndexResolver>();
+  /**
+   * The resolver serving `index`. A name none serves refuses here: `add` is the
+   * one caller, and it asks before writing anything, so a typo'd name leaves
+   * the dispatcher as it was instead of widening a batch forever.
+   */
+  const resolverFor = (index: string): IndexResolver => {
     const cached = resolverCache.get(index);
     if (cached !== undefined) return cached;
-    let found = exact.get(index) ?? null;
-    if (found === null) {
-      for (const candidate of namespaces) {
-        if (index.startsWith(candidate.prefix)) {
-          found = candidate.resolve;
-          break;
-        }
-      }
-    }
+    const found =
+      exact.get(index) ??
+      namespaces.find((candidate) => index.startsWith(candidate.prefix))?.resolve;
+    if (found === undefined) throw new UnknownIndexError(index, known);
     resolverCache.set(index, found);
     return found;
   };
@@ -231,8 +275,6 @@ export const createChangeDispatcher = <T>(
   const byRow = new Map<string, Set<T>>();
   /** `index:<name>` → key → entries. */
   const byIndex = new Map<string, Map<string, Set<T>>>();
-  /** `index:<name>` → every entry that declared it, for an unresolvable change. */
-  const byIndexAll = new Map<string, Set<T>>();
   let nextSeq = 0;
   let dispatched: Revision = journal.revision;
   let counts: DispatchCounts = { touched: 0, lookups: 0, scanWork: 0 };
@@ -251,9 +293,6 @@ export const createChangeDispatcher = <T>(
       if (bucket === undefined) continue;
       removeFrom(bucket, key, entry);
       if (bucket.size === 0) byIndex.delete(index);
-    }
-    for (const index of new Set(indexed.indices.map((dependency) => dependency.index))) {
-      removeFrom(byIndexAll, index, entry);
     }
   };
 
@@ -282,17 +321,7 @@ export const createChangeDispatcher = <T>(
         }
       }
       for (const [index, buckets] of byIndex) {
-        const resolve = resolverFor(index);
-        const keys = resolve === null ? null : resolve(change, index);
-        if (keys === null) {
-          // The change cannot be narrowed against this index, so every entry
-          // that declared it is handed the batch: the component read set's
-          // breadth, never fewer.
-          lookups += 1;
-          collectInto(touched, byIndexAll.get(index));
-          continue;
-        }
-        for (const key of keys) {
+        for (const key of resolverFor(index)(change, index)) {
           lookups += 1;
           collectInto(touched, buckets.get(key));
         }
@@ -324,9 +353,9 @@ export const createChangeDispatcher = <T>(
     try {
       found = gap ? { touched: new Set(entries.keys()), lookups: 0 } : touchedBy(changes);
     } catch (err) {
-      // A resolver reads the changed row, and a change it cannot read leaves the
-      // batch no more narrowable than a gap: one failure reports and hands every
-      // entry the batch rather than losing it for all of them.
+      // A resolver can still throw on a change it cannot read, and that leaves
+      // the batch no more narrowable than a gap: one failure reports and hands
+      // every entry the batch rather than losing it for all of them.
       // eslint-disable-next-line no-console
       console.error("[Dispatch] index resolver threw:", err);
       found = { touched: new Set(entries.keys()), lookups: 0 };
@@ -347,6 +376,10 @@ export const createChangeDispatcher = <T>(
   return {
     add(entry, dependencies) {
       if (closed) return;
+      const declared = dependencies.indices ?? [];
+      // Before `drop`, so a refusal leaves the dispatcher exactly as it was and
+      // the entry keeps the indexing it had.
+      for (const { index } of declared) resolverFor(index);
       const seq = entries.get(entry)?.seq ?? (nextSeq += 1);
       drop(entry);
       const indexed: Indexed = {
@@ -355,7 +388,7 @@ export const createChangeDispatcher = <T>(
         models: dependencies.models ?? [],
         sources: dependencies.sources ?? [],
         rows: dependencies.rows ?? [],
-        indices: dependencies.indices ?? [],
+        indices: declared,
       };
       entries.set(entry, indexed);
       for (const component of indexed.components) addTo(byComponent, component, entry);
@@ -366,11 +399,6 @@ export const createChangeDispatcher = <T>(
         let bucket = byIndex.get(index);
         if (bucket === undefined) byIndex.set(index, (bucket = new Map()));
         addTo(bucket, key, entry);
-      }
-      for (const index of new Set(indexed.indices.map((dependency) => dependency.index))) {
-        let all = byIndexAll.get(index);
-        if (all === undefined) byIndexAll.set(index, (all = new Set()));
-        all.add(entry);
       }
     },
     remove: drop,

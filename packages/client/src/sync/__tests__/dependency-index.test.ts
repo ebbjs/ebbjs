@@ -12,6 +12,7 @@ import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
 import {
   createChangeDispatcher,
+  UnknownIndexError,
   type ChangeDispatcher,
   type IndexResolver,
   type SubscriptionDependencies,
@@ -308,21 +309,17 @@ describe("dependency-indexed dispatch: correctness", () => {
     reported.mockRestore();
   });
 
-  it("touches every entry that declared an index when the resolver cannot resolve the change", () => {
+  it("touches nobody for an index key a resolver does not name", () => {
     const journal = testJournal();
     const notified = new Set<number>();
     const dispatcher = createChangeDispatcher<Sub>({
       journal,
-      indices: {
-        "relation:*": (change) =>
-          change.kind === "content" && change.components.includes("ebb/link") ? null : [change.id],
-      },
+      indices: { "relation:*": (change) => [change.id] },
       onChange: (entry) => notified.add(entry.id),
     });
     const relation = "relation:author/page";
     dispatcher.add({ id: 1 }, { indices: [{ index: relation, key: "u_1" }] });
     dispatcher.add({ id: 2 }, { indices: [{ index: relation, key: "u_2" }] });
-    // Declares no relation index, so a fallback for one must not reach it.
     dispatcher.add({ id: 3 }, { components: ["note/title"] });
 
     notified.clear();
@@ -334,12 +331,13 @@ describe("dependency-indexed dispatch: correctness", () => {
     journal.publish([change("u_1", ["user/name"], 2)]);
     expect([...notified].sort((a, b) => a - b)).toEqual([1]);
 
-    // A link write may have removed an edge whose target the resolver cannot
-    // name, so every entry that declared the index is touched.
+    // A link write resolves to the changed row, and the resolver names no key
+    // either declarer holds, so neither is touched: the answer is the whole
+    // answer, not a floor a fallback widens.
     notified.clear();
     journal.publish([change("p_1", ["ebb/link"], 3)]);
-    expect([...notified].sort((a, b) => a - b)).toEqual([1, 2]);
-    expect(dispatcher.stats().touched).toBe(2);
+    expect([...notified].sort((a, b) => a - b)).toEqual([]);
+    expect(dispatcher.stats().touched).toBe(0);
   });
 
   it("serves dynamically named indices from a namespace resolver", () => {
@@ -358,19 +356,80 @@ describe("dependency-indexed dispatch: correctness", () => {
     expect([...notified].sort((a, b) => a - b)).toEqual([1]);
   });
 
-  it("treats a declared index with no resolver as unresolvable", () => {
+  it("refuses a declared index no resolver serves, and names what it does serve", () => {
     const journal = testJournal();
     const notified = new Set<number>();
     const dispatcher = createChangeDispatcher<Sub>({
       journal,
+      indices: { membership: () => [], scope: () => [] },
       onChange: (entry) => notified.add(entry.id),
     });
-    dispatcher.add({ id: 1 }, { indices: [{ index: "unknown", key: "a" }] });
     dispatcher.add({ id: 2 }, { components: ["note/title"] });
 
-    journal.publish([change("n_1", ["other/title"], 1)]);
+    // The typo is named, and so is everything the dispatcher can serve, so the
+    // author reads the fix out of the error instead of guessing.
+    const refused = (): void => {
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:typo/typo", key: "u_1" }] });
+    };
+    expect(refused).toThrow(UnknownIndexError);
+    expect(refused).toThrow(/relation:typo\/typo/);
+    expect(refused).toThrow(/membership, scope/);
+    try {
+      refused();
+    } catch (err) {
+      const error = err as UnknownIndexError;
+      expect(error.index).toBe("relation:typo/typo");
+      expect(error.known).toEqual(["membership", "scope"]);
+      // The dispatcher indexes an opaque entry, so only the registry can name
+      // the subscription an author has to go and fix.
+      expect(error.subject).toBeNull();
+    }
 
-    expect([...notified]).toEqual([1]);
+    // Every build refuses it: this is not a development-only diagnostic.
+    const before = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      expect(refused).toThrow(UnknownIndexError);
+    } finally {
+      process.env.NODE_ENV = before;
+    }
+
+    // Nothing was indexed for the refused entry, so the dispatcher is exactly
+    // what it was: one entry, and the batch it alone matches reaches it.
+    expect(dispatcher.size()).toBe(1);
+    journal.publish([change("n_1", ["note/title"], 1)]);
+    expect([...notified]).toEqual([2]);
+
+    // A refused reindex keeps the entry's previous indexing: the old component
+    // read still reaches it, and the refused one indexed nothing.
+    expect(() =>
+      dispatcher.add(
+        { id: 2 },
+        {
+          components: ["note/body"],
+          indices: [{ index: "relation:typo/typo", key: "u_1" }],
+        },
+      ),
+    ).toThrow(UnknownIndexError);
+    notified.clear();
+    journal.publish([change("n_1", ["note/title"], 2)]);
+    expect([...notified]).toEqual([2]);
+  });
+
+  it("accepts a declared index a namespace resolver serves", () => {
+    const journal = testJournal();
+    const dispatcher = createChangeDispatcher<Sub>({
+      journal,
+      indices: { membership: () => [], "relation:*": (change) => [change.id] },
+      onChange: () => {},
+    });
+
+    // A dynamically named index has no entry of its own in the resolver set:
+    // the namespace is what declares it served.
+    expect(() =>
+      dispatcher.add({ id: 1 }, { indices: [{ index: "relation:author/page", key: "u_1" }] }),
+    ).not.toThrow();
+    expect(dispatcher.size()).toBe(1);
   });
 
   it("notifies in registration order", () => {

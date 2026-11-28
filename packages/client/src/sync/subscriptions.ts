@@ -67,6 +67,8 @@ import {
 
 import {
   createChangeDispatcher,
+  knownIndexErrorFor,
+  UnknownIndexError,
   type ChangeBatch,
   type DispatchCounts,
   type IndexDependency,
@@ -543,8 +545,7 @@ const indexDependencies = (entry: {
   }
   // A component an index read subsumes stays in the read set (it is leased and
   // re-checked there) but not in the dispatch set: the resolver is the
-  // narrower key, and answers `null` when it cannot narrow, which touches every
-  // entry that declared the index — the component set's breadth, never less.
+  // narrower key, and a change it names nothing under touches no declarer.
   const covered = new Set(entry.covered);
   // A covered whole-model dependency also covers the exact components claims
   // add later: a joined target row's resident values are claimed as
@@ -704,6 +705,10 @@ interface LeaseWatchdog {
   readonly now: () => number;
   readonly warn: (message: string) => void;
 }
+
+/** A refused index declaration, re-stated for the subscription an author wrote. */
+const unknownIndexFor = (error: unknown, entry: { readonly key: string }): unknown =>
+  error instanceof UnknownIndexError ? knownIndexErrorFor(error, entry.key) : error;
 
 /**
  * Build the registry over a live replica. Every query and row subscription goes
@@ -890,9 +895,34 @@ export const createSubscriptionRegistry = (
     const claimsMoved = !sameDependencies(entry.dependencies, next);
     const keysMoved = !sameIndices(entry.suppliedIndices, nextIndices);
     if (!claimsMoved && !keysMoved) return;
+    /** What this move is about to overwrite, so a refused declaration restores it. */
+    const held = {
+      suppliedIndices: entry.suppliedIndices,
+      dependencies: entry.dependencies,
+      reads: entry.reads,
+      generation: entry.generation,
+      claimsSince: entry.claimsSince,
+      warnedAt: entry.warnedAt,
+    };
+    /**
+     * Re-index the entry, and undo the whole move if the dispatcher refuses the
+     * declaration. A refusal is not a partial move: the entry keeps the keys,
+     * claims, read set, acquire generation and quiet period it held, so what
+     * dispatch reaches it through is still what the entry says it depends on.
+     * A key-only move touched nothing but the keys, and restoring the rest is
+     * then a write of the value already there.
+     */
+    const reindex = (): void => {
+      try {
+        dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      } catch (err) {
+        Object.assign(entry, held);
+        throw unknownIndexFor(err, entry);
+      }
+    };
     if (keysMoved) entry.suppliedIndices = nextIndices;
     if (!claimsMoved) {
-      dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      reindex();
       return;
     }
     entry.dependencies = next;
@@ -907,7 +937,7 @@ export const createSubscriptionRegistry = (
     // names only its row and the keys it supplied, so a new claim cannot move
     // it — only a key-set move does.
     if (entry.kind === "query" || keysMoved) {
-      dispatcher.add(entry as unknown as Entry<unknown>, indexDependencies(entry));
+      reindex();
     }
     void acquire(entry as unknown as Entry<unknown>, next, entry.generation);
   };
@@ -1059,7 +1089,7 @@ export const createSubscriptionRegistry = (
 
   const dispatcher = createChangeDispatcher<Entry<unknown>>({
     journal: replica,
-    indices: createIndexResolvers(replica),
+    indices: createIndexResolvers(),
     onChange: notify,
   });
 
@@ -1180,7 +1210,15 @@ export const createSubscriptionRegistry = (
         return handle;
       }
       entries.set(mapKey, entry);
-      dispatcher.add(entry, indexDependencies(entry));
+      try {
+        dispatcher.add(entry, indexDependencies(entry));
+      } catch (err) {
+        // A refused declaration fails the open, so the registry holds nothing
+        // for a key that never became a subscription.
+        entries.delete(mapKey);
+        entry.state = "terminal";
+        throw unknownIndexFor(err, entry);
+      }
       armWatchdog();
       if (entry.kind === "row" && entry.row !== null) {
         depend(entry, rowDependencies(replica, entry.row, entry.rowComponents));
