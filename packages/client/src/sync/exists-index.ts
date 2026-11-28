@@ -40,24 +40,19 @@ const existsDependency = (component: string): IndexDependency => ({
  *
  * A membership change carries no component list, so the journal's existence
  * delta says whether the tested component arrived or left — a row entering or
- * leaving a model, or an eviction. A delta omits a part nothing moved in, so a
- * missing existence part means this component stayed; a membership change with
- * no delta at all is the one shape that could have moved the whole component
- * set unobserved, and answers `null`. Membership of the component's model is
- * carried by the read's `sources` as well, which is what keeps a new row's
- * arrival touching the read.
+ * leaving a model, or an eviction. The delta is complete (ADR 0006), so a part
+ * naming nothing moved no existence at all: the component stayed. Membership of
+ * the component's model is carried by the read's `sources` as well, which is
+ * what keeps a new row's arrival touching the read.
  */
-const existsSubjects = (change: ReplicaChange, index: string): readonly string[] | null => {
+const existsSubjects = (change: ReplicaChange, index: string): readonly string[] => {
   const component = existsComponent(index);
-  if (component === null) return null;
+  if (component === null) return [];
   if (change.kind === "content") {
     return change.components.includes(component) ? [component] : [];
   }
-  const existence = change.delta?.existence;
-  if (existence === undefined) return change.delta === undefined ? null : [];
-  return existence.added.includes(component) || existence.removed.includes(component)
-    ? [component]
-    : [];
+  const { added, removed } = change.delta.existence;
+  return added.includes(component) || removed.includes(component) ? [component] : [];
 };
 
 export const existsIndexFamily: IndexFamily = {

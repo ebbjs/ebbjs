@@ -9,14 +9,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import {
-  createReplica,
-  type ChangeDelta,
-  type Replica,
-  type ReplicaChange,
-} from "@ebbjs/storage/replica";
+import { type ChangeDelta, type ReplicaChange } from "@ebbjs/storage/replica";
 
 import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
@@ -50,27 +44,6 @@ const makeClient = () =>
     storage: createMemoryAdapter(),
     schema,
   });
-
-const replicaWithMembership = (): Replica => {
-  const membership: Update = {
-    id: "u_membership",
-    subject_id: "todo_1",
-    component: "ebb/membership",
-    method: "replace",
-    data: {
-      value: { entity_id: "todo_1", group_id: "grp_1" },
-      update_id: "u_membership",
-      hlc: makeHlc(1),
-    },
-  };
-  const replica = createReplica();
-  replica.ingest(
-    { id: "a_1", actor_id: "actor_1", hlc: makeHlc(1), gsn: 1, updates: [] },
-    [membership],
-    1,
-  );
-  return replica;
-};
 
 /** The resolver for one index name, as the dispatcher would look it up. */
 const resolveFor = (
@@ -140,7 +113,7 @@ const changeNaming = (dependency: IndexDependency): ReplicaChange => {
 
 describe("index families: one list drives declaration and resolution", () => {
   it("registers a resolver for every family name beside the membership resolver", () => {
-    const resolvers = createIndexResolvers(replicaWithMembership());
+    const resolvers = createIndexResolvers();
 
     for (const family of INDEX_FAMILIES) {
       expect(family.names.length).toBeGreaterThan(0);
@@ -154,7 +127,7 @@ describe("index families: one list drives declaration and resolution", () => {
   });
 
   it("serves every index name a read declares", () => {
-    const resolvers = createIndexResolvers(replicaWithMembership());
+    const resolvers = createIndexResolvers();
 
     for (const query of queries()) {
       const { indices } = structuralReads(query);

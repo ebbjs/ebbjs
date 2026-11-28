@@ -977,6 +977,75 @@ describe("subscription registry: consumer-supplied index keys (#1007)", () => {
   });
 });
 
+describe("subscription registry: an index no resolver serves (#1025)", () => {
+  /**
+   * The typo an author makes: `existence` is the name the human remembers, and
+   * no registered namespace prefixes it. (`relation:typo/typo` would be a typo
+   * too, but the `relation:*` namespace serves every name under it, so it is
+   * not one the registry can refuse.)
+   */
+  const TYPO = [{ index: "existence:todo/due", key: "todo/due" }];
+
+  it("refuses the declaration", () => {
+    const { subscriptions } = harness();
+    const entry = subscriptions.open({ kind: "query", key: "typo", reads: [] });
+
+    // The registry builds its resolvers from a fixed set, so it can tell a
+    // typo'd index from one it merely cannot narrow. The author hears about it
+    // where they wrote it, in every build, not as a batch that always touches
+    // them.
+    expect(() => entry.depend([], TYPO)).toThrow(/existence:todo\/due/);
+    // The names it does serve, so the author sees the intended one beside the
+    // typo rather than having to go read the registry.
+    expect(() => entry.depend([], TYPO)).toThrow(/membership, relation:\*, exists:\*, scope/);
+    // And the subscription an author has to go and fix: the dispatcher indexes
+    // an opaque entry, so only the registry can name it.
+    expect(() => entry.depend([], TYPO)).toThrow(/declared by "typo"/);
+    entry.release();
+    subscriptions.close();
+  });
+
+  it("keeps what the entry held when a later declaration is refused", () => {
+    const { replica, subscriptions } = harness();
+    const entry = subscriptions.open({ kind: "query", key: "typo", reads: [] });
+    const seen: string[] = [];
+    entry.onChange(() => seen.push("typo"));
+
+    // The declaration the entry did make is the one it keeps: a refused
+    // re-declaration is not a half-applied move, so the claims and keys the
+    // entry held before it are still what dispatch reaches it through.
+    entry.depend([{ id: "doc_1", components: ["document/title"] }]);
+    expect(() => entry.depend([{ id: "doc_1", components: ["document/body"] }], TYPO)).toThrow(
+      /existence:todo\/due/,
+    );
+
+    expect(entry.dependencies).toEqual([{ id: "doc_1", components: ["document/title"] }]);
+    writeTitle(replica, "Renamed", 2);
+    expect(seen).toEqual(["typo"]);
+
+    entry.release();
+    subscriptions.close();
+  });
+
+  it("leaves no subscription behind when opening is refused", () => {
+    const { subscriptions } = harness();
+
+    // A refused declaration fails the open, so the registry holds nothing for
+    // that key: the author fixes the name and subscribes again rather than
+    // inheriting a half-built entry no dispatch can reach.
+    expect(() =>
+      subscriptions.open({ kind: "query", key: "typo", reads: [], indices: TYPO }),
+    ).toThrow(/existence:todo\/due/);
+    expect(subscriptions.stats().live).toBe(0);
+    expect(subscriptions.entries()).toEqual([]);
+
+    const entry = subscriptions.open({ kind: "query", key: "typo", reads: [] });
+    expect(entry.state).toBe("live");
+    entry.release();
+    subscriptions.close();
+  });
+});
+
 describe("subscription registry at the client seam", () => {
   const note = defineModel("note", {
     title: e.string(),

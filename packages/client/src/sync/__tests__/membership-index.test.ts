@@ -5,10 +5,9 @@
  * keyed by the member entity id. A change that moved a membership row has to
  * name that member even after the row is gone: an unshare or an eviction
  * removes the row that stated the subject, and the journal's delta carries it
- * instead. The resolver answers in three terms — `[]` for a change that is not
- * a membership row this index answers for, exactly one key for a subject it can
- * name, and `null` when it cannot say, which touches every entry that declared
- * the index.
+ * instead. The resolver answers in two terms — `[]` for a change that is not a
+ * membership row this index answers for, and exactly the member entities its
+ * delta names on either side.
  */
 
 import { describe, expect, it } from "vitest";
@@ -107,29 +106,9 @@ const noMovement: ChangeDelta = {
   membership: { before: null, after: null },
 };
 
-/**
- * A change with no delta at all — the shape the type now forbids and #1025
- * deletes the fallback for. Only the transitional fallback tests build one.
- */
-const stateless = (
-  revision: number,
-  id: string,
-  shape:
-    | { readonly kind: "content"; readonly components: readonly string[] }
-    | { readonly kind: "membership"; readonly models: readonly string[] },
-): ReplicaChange =>
-  ({
-    revision,
-    id,
-    deleted: shape.kind === "membership",
-    ...(shape.kind === "content"
-      ? { kind: "content", components: shape.components }
-      : { kind: "membership", membership: "left", models: shape.models }),
-  }) as ReplicaChange;
-
 /** The resolver for one index name, as the dispatcher would look it up. */
-const resolveFor = (replica: Replica, index: string) => {
-  const resolvers = createIndexResolvers(replica);
+const resolveFor = (index: string) => {
+  const resolvers = createIndexResolvers();
   const exact = resolvers[index];
   if (exact !== undefined) return (change: Parameters<typeof exact>[0]) => exact(change, index);
   throw new Error(`no resolver for ${index}`);
@@ -140,7 +119,7 @@ describe("membership resolver: the three keys", () => {
     const replica = createReplica();
     ingest(replica, membership(1, "m_1", "todo_1", "grp_1"));
 
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(changeAt(replica, 1))).toEqual(["todo_1"]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(changeAt(replica, 1))).toEqual(["todo_1"]);
   });
 
   it("keys a group refile on the entity it keeps filing", () => {
@@ -148,7 +127,7 @@ describe("membership resolver: the three keys", () => {
     ingest(replica, membership(1, "m_1", "todo_1", "grp_1"));
     ingest(replica, membership(2, "m_1", "todo_1", "grp_2"));
 
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(changeAt(replica, 2))).toEqual(["todo_1"]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(changeAt(replica, 2))).toEqual(["todo_1"]);
   });
 
   it("names both entities a row was refiled between", () => {
@@ -159,15 +138,11 @@ describe("membership resolver: the three keys", () => {
     // The group stayed and only the filed entity moved: the row stopped filing
     // `todo_1` and started filing `todo_2`, so both row subscriptions see
     // their groups move.
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(changeAt(replica, 2))).toEqual([
-      "todo_1",
-      "todo_2",
-    ]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(changeAt(replica, 2))).toEqual(["todo_1", "todo_2"]);
   });
 
   it("keys the member the journal's pair names when no row is left to read", () => {
-    const replica = createReplica();
-    const resolve = resolveFor(replica, MEMBERSHIP_INDEX);
+    const resolve = resolveFor(MEMBERSHIP_INDEX);
 
     // The removed row is the only place the filing was stated, so the change's
     // delta carries the pair on each side and the resolver answers its member
@@ -196,7 +171,7 @@ describe("membership resolver: the three keys", () => {
     ingest(replica, membership(1, "m_1", "todo_1", "grp_1"));
     ingest(replica, membership(2, "m_1", "todo_1", "grp_2"));
 
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(changeAt(replica, 2))).toEqual(["todo_1"]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(changeAt(replica, 2))).toEqual(["todo_1"]);
   });
 
   it("keys an unshared row on the entity it filed while that entity stays", () => {
@@ -209,7 +184,7 @@ describe("membership resolver: the three keys", () => {
     const change = changeAt(replica, 4);
     // One row is deleted; the entity stays, and the other filing it is intact.
     expect(replica.memberships({ entityId: "todo_1" })).toEqual(["grp_2"]);
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(change)).toEqual(["todo_1"]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(change)).toEqual(["todo_1"]);
   });
 
   it("keys a row that stopped filing on the entity it filed", () => {
@@ -222,7 +197,7 @@ describe("membership resolver: the three keys", () => {
     // The row is readable but no longer names its member, so only the journal
     // can say whose groups moved.
     expect(replica.get("m_1")).toBeDefined();
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(change)).toEqual(["todo_1"]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(change)).toEqual(["todo_1"]);
   });
 
   it("keys an evicted row on the entity it filed", () => {
@@ -234,13 +209,13 @@ describe("membership resolver: the three keys", () => {
 
     const change = replica.changesSince(2).find((entry) => entry.id === "m_1");
     if (change === undefined) throw new Error("expected the membership row's change");
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(change)).toEqual(["todo_1"]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(change)).toEqual(["todo_1"]);
   });
 
   it("answers no key for a change that is not a membership row this index answers for", () => {
     const replica = createReplica();
     ingest(replica, put(1, "todo_1", "todo", { title: "One" }));
-    const resolve = resolveFor(replica, MEMBERSHIP_INDEX);
+    const resolve = resolveFor(MEMBERSHIP_INDEX);
 
     // A row entering `todo` names a model, not a filed subject.
     expect(resolve(changeAt(replica, 1))).toEqual([]);
@@ -254,16 +229,46 @@ describe("membership resolver: the three keys", () => {
     expect(resolve(changeAt(replica, 3))).toEqual([]);
   });
 
-  it("answers cannot say only for a change the journal gives no delta (#1025)", () => {
-    const replica = createReplica();
-    const resolve = resolveFor(replica, MEMBERSHIP_INDEX);
+  it("answers from the delta alone for a membership write whose row is unreadable", () => {
+    // A replica that never saw the row: the resolver has the change and nothing
+    // else, so a key here proves it does not read the changed row back.
+    const resolve = resolveFor(MEMBERSHIP_INDEX);
+    const side = { entityId: "todo_1", groupId: "grp_1" };
 
-    // Transitional: every journal path now states a movement, so these shapes
-    // are unreachable from the replica and #1025 deletes the branch.
-    expect(resolve(stateless(1, "m_missing", { kind: "membership", models: ["ebb"] }))).toBeNull();
+    // The value write that files a row: the pair is in the delta.
     expect(
-      resolve(stateless(2, "m_missing", { kind: "content", components: ["ebb/membership"] })),
-    ).toBeNull();
+      resolve({
+        revision: 1,
+        id: "m_missing",
+        kind: "content",
+        deleted: false,
+        components: ["ebb/membership"],
+        delta: { ...noMovement, membership: { before: side, after: side } },
+      }),
+    ).toEqual(["todo_1"]);
+
+    // A membership change that moved no pair names no key, in either shape.
+    expect(
+      resolve({
+        revision: 2,
+        id: "m_missing",
+        kind: "membership",
+        deleted: true,
+        membership: "left",
+        models: ["ebb"],
+        delta: noMovement,
+      }),
+    ).toEqual([]);
+    expect(
+      resolve({
+        revision: 3,
+        id: "m_missing",
+        kind: "content",
+        deleted: false,
+        components: ["ebb/membership"],
+        delta: noMovement,
+      }),
+    ).toEqual([]);
   });
 
   it("answers no key for a readable row that filed nobody", () => {
@@ -289,7 +294,7 @@ describe("membership resolver: the three keys", () => {
     expect(change.delta).toEqual(noMovement);
     // No part moved, so no key exists for this change rather than a fallback
     // over every entry.
-    expect(resolveFor(replica, MEMBERSHIP_INDEX)(change)).toEqual([]);
+    expect(resolveFor(MEMBERSHIP_INDEX)(change)).toEqual([]);
   });
 });
 

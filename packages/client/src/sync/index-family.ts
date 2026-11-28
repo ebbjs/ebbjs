@@ -3,12 +3,10 @@
  *
  * A family owns both directions of one index's contract: the dependencies a
  * read declares under it, and the keys a change resolves to. They must agree
- * — a name only one side knows silently widens dispatch to the component
- * fallback — so both live in the family module rather than one in the planner
- * and one in the resolver registry.
+ * — a name only one side knows is a name the dispatcher refuses — so both live
+ * in the family module rather than one in the planner and one in the resolver
+ * registry.
  */
-
-import type { Replica } from "@ebbjs/storage/replica";
 
 import type { IndexDependency, IndexResolver } from "./dependency-index";
 import type { Predicate, Query } from "./query";
@@ -35,13 +33,12 @@ export interface IndexFamily {
   /** The index reads one query declares under this family. */
   declare(query: Query): IndexDeclaration;
   /**
-   * The resolver this family registers, bound to the replica it answers from.
-   * The dispatcher passes the concrete index name per change, so a namespace
-   * family answers for the name it was asked about, and a `null` answer makes
-   * the dispatcher touch every reader of that index — the breadth the
-   * component read set gave before it.
+   * The resolver this family registers. The dispatcher passes the concrete
+   * index name per change, so a namespace family answers for the name it was
+   * asked about. A family answers from the change and its complete delta
+   * (ADR 0006) and needs nothing from the replica.
    */
-  resolver(replica: Replica): IndexResolver;
+  resolver(): IndexResolver;
 }
 
 /** The registration name of the namespace serving every index starting with `prefix`. */
