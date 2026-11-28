@@ -28,12 +28,9 @@ describe("planQuery", () => {
     ]);
     expect(plan.readComponents).toEqual(["todo/completed"]);
     // The projected-row read adds the source's whole model (no selection names
-    // its fields) and membership for `groupIds`.
-    expect(selectionReadComponents(filtered)).toEqual([
-      "todo/*",
-      "todo/completed",
-      "ebb/membership",
-    ]);
+    // its fields). Membership is not a read component: `groupIds` is a
+    // projection of the row index, keyed on the ids the result holds.
+    expect(selectionReadComponents(filtered)).toEqual(["todo/*", "todo/completed"]);
   });
 
   it("pushes indexed predicates ahead of filters and records the read components", () => {
@@ -57,7 +54,9 @@ describe("planQuery", () => {
         { kind: "filter", field: "completed", value: true },
       ],
     });
-    expect(plan.readComponents).toEqual(["todo/completed", "ebb/link", "ebb/membership"]);
+    // A membership predicate reads no component at all: its dependency is the
+    // group's `scope` index, declared in `structuralReads`.
+    expect(plan.readComponents).toEqual(["todo/completed", "ebb/link"]);
   });
 
   it("reads the link component, not the adjacency wire type", () => {
@@ -74,9 +73,10 @@ describe("planQuery", () => {
       }),
     );
 
-    // The matching-id result depends on the edge and membership rows only; the
-    // source model's row set is watched separately by the cache.
-    expect(plan.readComponents).toEqual(["ebb/link", "ebb/membership"]);
+    // The matching-id result depends on the edge rows only; the source model's
+    // row set is watched separately by the cache, and a membership predicate
+    // reads the group's scope index rather than a component.
+    expect(plan.readComponents).toEqual(["ebb/link"]);
   });
 
   it("deduplicates read components across branches", () => {
@@ -148,13 +148,19 @@ describe("planQuery", () => {
 
     expect(readComponentsFor(hasNot)).toEqual(["todo/draft"]);
     expect(readComponentsFor(nullEquality)).toEqual(["todo/status"]);
-    expect(readComponentsFor(membership)).toEqual(["ebb/membership"]);
+    // A membership predicate names no component: `scope` is its dependency.
+    expect(readComponentsFor(membership)).toEqual([]);
   });
 
-  it("adds membership to a projected row even when no predicate reads it", () => {
+  it("never adds membership to a projected row", () => {
     const filtered = query({ groups: [[{ kind: "field", field: "status", value: "open" }]] });
+    const membershipped = query({ groups: [[{ kind: "membership", anyOf: ["group_1"] }]] });
 
-    expect(selectionReadComponents(filtered)).toContain("ebb/membership");
+    // `groupIds` is a per-row projection of the membership relation, so the
+    // result keys membership on the ids it holds (#1011) instead of declaring
+    // the component every membership write matches.
+    expect(selectionReadComponents(filtered)).not.toContain("ebb/membership");
+    expect(selectionReadComponents(membershipped)).not.toContain("ebb/membership");
   });
 
   it("adds each joined model whole to a projected row", () => {
@@ -175,14 +181,13 @@ describe("planQuery", () => {
     };
     const plan = planQuery(joined);
 
-    expect(plan.readComponents).toEqual(["issue/title", "ebb/link", "ebb/membership"]);
+    expect(plan.readComponents).toEqual(["issue/title", "ebb/link"]);
     // No selection: the source projects whole, then the plan's reads, then the
     // joined models (the membership join reads the group component).
     expect(selectionReadComponents(joined)).toEqual([
       "issue/*",
       "issue/title",
       "ebb/link",
-      "ebb/membership",
       "user/*",
       "ebb/group",
     ]);

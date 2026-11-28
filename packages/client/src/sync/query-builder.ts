@@ -32,11 +32,11 @@
  *
  * A read declares the fields it needs with `.select({...})`. The selection is
  * the projection, the lease set, and the invalidation key; system components
- * (`ebb/link`, `ebb/membership`, joined targets) are planner-supplied. A
- * projecting terminal narrows the ids first, then acquires the components the
- * page projects — including a store-backed source or join target — while
- * `.count()` / `.exists()` / `.toRaw()` never acquire the projection. An
- * unlimited projection is therefore a full read: page it with `limit`.
+ * (`ebb/link`, joined targets) are planner-supplied. A projecting terminal
+ * narrows the ids first, then acquires the components the page projects —
+ * including a store-backed source or join target — while `.count()` / `.exists()`
+ * / `.toRaw()` never acquire the projection. An unlimited projection is
+ * therefore a full read: page it with `limit`.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -506,9 +506,9 @@ export interface QueryBuilder<
    * Declare the model fields this read projects. The selection is also the
    * lease set and the invalidation key; an unselected field is neither
    * returned, leased, nor watched. System components are implicit and cannot
-   * be selected: `groupIds` is on every query row, `ebb/link` is added by a
-   * relationship predicate or join, and `ebb/membership` by a membership
-   * predicate or the `groups` join.
+   * be selected: `groupIds` is on every query row, projected from the row
+   * index rather than from a selectable component; `ebb/link` is added by a
+   * relationship predicate or join.
    *
    * An unknown key or a value other than `true` is rejected at the type level
    * and at runtime. `.select({})` returns only the structural keys (`id`, and
@@ -652,10 +652,11 @@ const patchProjection =
  * Re-apply the plan's field predicates to one row: a patch may narrow, never
  * widen. A non-field predicate (an adjacency, membership, or existence test)
  * reads an index rather than the row, so this cannot re-evaluate it and treats
- * it as satisfied. That is safe only because such a predicate is a `keys`
- * component: `patchableRows` declines the batch, so no row whose place depends
- * on one ever reaches here through the results view. A source calling `patch` on its
- * own must keep that contract, or it will widen a result it cannot re-narrow.
+ * it as satisfied. That is safe only because such a predicate is either a
+ * `keys` component or a declared index key: `patchableRows` declines the batch,
+ * so no row whose place depends on one ever reaches here through the results
+ * view. A source calling `patch` on its own must keep that contract, or it will
+ * widen a result it cannot re-narrow.
  */
 const matchesEveryFilter = (row: Entity, query: Query): boolean =>
   query.groups.length === 0 ||
@@ -688,7 +689,7 @@ export function buildReplicaQueryBuilder<
     executor: PlanExecutor,
     fields: readonly string[] | null,
   ): QueryRow<TFields> =>
-    projectQueryRow(row, shape, membershipRowIds(row.id, executor), context.migrations, fields);
+    projectQueryRow(row, shape, membershipGroupIds(row.id, executor), context.migrations, fields);
   const resolveField: FieldResolver = (entity, field) =>
     projectedFieldValue(entity, field, shape, context.migrations);
   /**
@@ -780,7 +781,7 @@ const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly s
         ? executor.relationships({ as: join.as, type: join.type, sourceId: entity.id })
         : executor.relationships({ as: join.as, type: join.type, targetId: entity.id });
     case "membership":
-      return membershipRowIds(entity.id, executor);
+      return membershipGroupIds(entity.id, executor);
   }
 };
 
@@ -929,10 +930,11 @@ const runProjected = async <TRow extends { readonly id: string }>(
   projectAcquiring(await runPlan(query, loadExecutor, resolveField), query, context, projectBase);
 
 /**
- * The group ids a projected query row carries, read from the replica's
- * entity-keyed membership index.
+ * The group ids a projected query row carries: the entity-keyed answer of the
+ * replica's membership index, not the ids of the membership rows themselves
+ * (`replica.membershipLinks` answers those).
  */
-const membershipRowIds = (entityId: string, executor: PlanExecutor): readonly string[] =>
+const membershipGroupIds = (entityId: string, executor: PlanExecutor): readonly string[] =>
   executor.memberships({ entityId });
 
 /**

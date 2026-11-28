@@ -19,12 +19,15 @@
  * dispatcher what each entry reads — its components and models, or the row it
  * watches plus the membership subject that files it — together with every
  * derived-index key it declared or its consumer supplied through `depend`
- * (#1007), merged and deduped into one key set per entry. The dispatcher hands
- * back only the entries a batch touches. A batch is matched by kind (#939): a
- * content change by the component it names, a membership change by the model
- * the row entered or left, which every reader of that model observes. What an
- * entry was holding that the replica no longer has travels with the batch as
- * the unload signal, read off the residency table rather than the journal.
+ * (#1007), merged and deduped into one key set per entry. A projected result's
+ * supplied keys are the membership keys of the rows it holds (#1011), which is
+ * how a membership write reaches only the results holding that entity. The
+ * dispatcher hands back only the entries a batch touches. A batch is matched by
+ * kind (#939): a content change by the component it names, a membership change
+ * by the model the row entered or left, which every reader of that model
+ * observes. What an entry was holding that the replica no longer has travels
+ * with the batch as the unload signal, read off the residency table rather than
+ * the journal.
  *
  * One dispatcher owns the one journal position, reads the journal once per
  * batch, and advances to the batch revision before any listener runs, so a
@@ -193,8 +196,8 @@ export interface SubscriptionWriter<TResult = unknown> {
   /**
    * Hold exactly these values, releasing the ones dropped, and declare the
    * derived-index keys the consumer derived for itself (#1007) — the
-   * membership rows a result holds, for a read whose keys come from its result
-   * rather than its query.
+   * membership keys of the rows a projected result holds, for a read whose keys
+   * come from its result rather than its query (#1011).
    *
    * `indices` absent means "no opinion": the keys already supplied stay in
    * force, which is what a caller holding only a claim set — the patch path
@@ -389,6 +392,43 @@ export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean =
 };
 
 /**
+ * The derived-index keys a result holds, and how a change resolves into them
+ * (#1011). Membership is a relation, so a projected result names the entity ids
+ * whose `groupIds` it holds rather than reading a membership component, and a
+ * scoped read names the groups its predicate selects. Both are one kind of
+ * dependency: dispatch, `isRelevant`, and the patch gate read this one set.
+ */
+export interface HeldIndices {
+  /**
+   * The keys the result holds, per index name. `null` means it observes that
+   * index but holds no set yet — a projected result before its first run — so
+   * it cannot narrow, and a change it cannot rule out is a touch, never a miss.
+   */
+  readonly held: ReadonlyMap<string, ReadonlySet<string> | null>;
+  /** The keys a change names under one index, or `null` when it cannot say. */
+  resolve(index: string, change: ReplicaChange): readonly string[] | null;
+}
+
+/**
+ * Whether a change moved a key one of the result's indices holds. The
+ * resolver's three answers all matter: no keys is not this index's business,
+ * an exact key touches the result only when it is one of its own, and `null`
+ * cannot be narrowed against so it always touches.
+ */
+export const touchesHeldIndices = (keys: HeldIndices, change: ReplicaChange): boolean => {
+  for (const [index, held] of keys.held) {
+    const named = keys.resolve(index, change);
+    if (named === null) return true;
+    if (named.length === 0) continue;
+    // A key that exists but has no set yet: the result holds ids nothing has
+    // recorded, so it may hold the one this change names.
+    if (held === null) return true;
+    if (named.some((key) => held.has(key))) return true;
+  }
+  return false;
+};
+
+/**
  * The rows a batch lets a result patch in place (#942), or `null` when any
  * change it makes to `reads` must re-run the query.
  *
@@ -398,17 +438,27 @@ export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean =
  * order key, join target, or structural key. A membership change re-runs,
  * because a row entering, leaving, or refiling can change the set the result is
  * drawn from. A change the entry does not read is not its concern and does not
- * block a patch.
+ * block a patch — unless it moved one of the result's index keys, in which case
+ * a splice would keep the projection it rewrote. `indices` is required for that
+ * reason: a caller that omitted it would silently lose the membership gate and
+ * patch past a stale `groupIds`.
  */
 export const patchableRows = (
   reads: ReadSet,
   shape: PatchShape,
   changes: readonly ReplicaChange[],
+  indices: HeldIndices,
 ): readonly string[] | null => {
   if (!shape.allowed) return null;
   const ids = new Set<string>();
   for (const change of changes) {
-    if (!touchesReadSet(reads, change)) continue;
+    if (!touchesReadSet(reads, change)) {
+      // A refile names a membership row, not the projected row, so the read set
+      // does not match it: only the result's own keys do. A change that moved
+      // none is not this result's concern.
+      if (touchesHeldIndices(indices, change)) return null;
+      continue;
+    }
     if (change.kind !== "content" || change.deleted) return null;
     let patchable = false;
     for (const component of change.components) {

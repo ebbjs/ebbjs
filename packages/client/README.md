@@ -378,12 +378,20 @@ reads: dispatch touches a subscription whose relation target changed, or whose
 component was written, instead of every subscription that reads the component.
 A link write touches the targets the journal's edge delta names under the
 index's relation plus the changed row, and a membership scope resolves to both
-groups a move names — the read set still keeps `ebb/membership` broad, so scope
-dispatch narrowing still waits on #962. Only a change whose shape cannot say
-what moved — a link write or a membership change with no delta — falls back to
-every reader of the index. A read that also projects the relation keeps
-`ebb/link` in its dispatch set, because a join projects the source row's edges,
-so that read still sees every link write.
+groups a move names. Only a change whose shape cannot say what moved — a link
+write or a membership change with no delta — falls back to every reader of the
+index. A read that also projects the relation keeps `ebb/link` in its dispatch
+set, because a join projects the source row's edges, so that read still sees
+every link write.
+
+Membership is a relation, not a component of the row ([ADR
+0005](../../docs/adr/0005-membership-is-a-relation.md)). A query row's `groupIds` is
+projected from the row index, one lookup per row, so no read declares
+`ebb/membership`: a projected-row result declares `membership:<entityId>` for
+each row it holds, and a `where("groups", …)` predicate declares the group's
+`scope` key. A membership write therefore touches only the results that hold
+that entity — a write to a row no result projects touches none, and an invite
+(a new `ebb/grant` row) no longer reaches projected reads.
 
 ## Seeding fixtures
 

@@ -112,6 +112,24 @@ export interface ChangeJournal {
  */
 export type IndexResolver = (change: ReplicaChange, index: string) => readonly string[] | null;
 
+/**
+ * The resolver serving one index name from a resolver table: an exact name
+ * first, then the namespace it starts with. A name with no resolver answers
+ * `null`, which a caller reads as "cannot narrow this change" rather than
+ * "names no key".
+ */
+export const resolverOf = (
+  indices: Readonly<Record<string, IndexResolver>>,
+  index: string,
+): IndexResolver | null => {
+  const exact = indices[index];
+  if (exact !== undefined) return exact;
+  for (const [name, resolve] of Object.entries(indices)) {
+    if (name.endsWith("*") && index.startsWith(name.slice(0, -1))) return resolve;
+  }
+  return null;
+};
+
 export interface ChangeDispatcherOptions<T> {
   readonly journal: ChangeJournal;
   /**
@@ -195,26 +213,14 @@ export const createChangeDispatcher = <T>(
   options: ChangeDispatcherOptions<T>,
 ): ChangeDispatcher<T> => {
   const { journal, onChange } = options;
-  const exact = new Map<string, IndexResolver>();
-  const namespaces: { readonly prefix: string; readonly resolve: IndexResolver }[] = [];
-  for (const [name, resolve] of Object.entries(options.indices ?? {})) {
-    if (name.endsWith("*")) namespaces.push({ prefix: name.slice(0, -1), resolve });
-    else exact.set(name, resolve);
-  }
   /** One lookup per declared index name, memoized for the dispatcher's life. */
   const resolverCache = new Map<string, IndexResolver | null>();
   const resolverFor = (index: string): IndexResolver | null => {
     const cached = resolverCache.get(index);
     if (cached !== undefined) return cached;
-    let found = exact.get(index) ?? null;
-    if (found === null) {
-      for (const candidate of namespaces) {
-        if (index.startsWith(candidate.prefix)) {
-          found = candidate.resolve;
-          break;
-        }
-      }
-    }
+    // The cache holds the lookup cost to once per name, which is what lets the
+    // one shared rule scan the table instead of pre-partitioning it.
+    const found = resolverOf(options.indices ?? {}, index);
     resolverCache.set(index, found);
     return found;
   };

@@ -3,9 +3,10 @@
  *
  * One declaration decides three things: the fields a read projects, the
  * components it leases, and the components whose changes invalidate its result.
- * `select` names model fields only; the components are `ebb/link`,
- * `ebb/membership`, the joined targets, and the predicate/order fields the
- * planner adds — never selected by the caller.
+ * `select` names model fields only; the components are `ebb/link`, the joined
+ * targets, and the predicate/order fields the planner adds — never selected by
+ * the caller. Membership is no component of a read: it is the relation a
+ * projected row's `groupIds` is looked up in.
  *
  * The selection is carried on the {@link Query} value (as
  * {@link QuerySelection}) so the query that produced a result also says what
@@ -13,7 +14,6 @@
  * result entries.
  */
 
-import { EBB_COMPONENTS } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import { EntityValidationError } from "@ebbjs/schema";
@@ -115,8 +115,9 @@ export const selectionBase = (query: Query): readonly string[] => {
 
 /**
  * The components a projected-row result reads: the selection, every component
- * its predicates and ordering name, its joins' targets, and membership for the
- * `groupIds` every query row carries.
+ * its predicates and ordering name, and its joins' targets. Membership is not
+ * among them: `groupIds` is projected from the row index, which a result keys
+ * on the ids it holds (#1011).
  */
 export const selectionReadComponents = (query: Query): readonly string[] => {
   if (query.source === "") return [];
@@ -125,7 +126,6 @@ export const selectionReadComponents = (query: Query): readonly string[] => {
   for (const join of query.joins) {
     for (const component of joinReadComponents(join)) reads.add(component);
   }
-  reads.add(EBB_COMPONENTS.membership);
   return [...reads];
 };
 
@@ -150,10 +150,15 @@ export interface StructuralReads {
    * resolve a change, exactly as broad).
    */
   readonly covered: readonly string[];
+  /**
+   * The declared indices no component re-checks, so a retained result
+   * re-checks the key itself: a membership predicate's `scope` (#1011).
+   */
+  readonly recheck: readonly IndexDependency[];
 }
 
 /** The structural dependencies of a read; the empty chain reads no replica row. */
-const noStructuralReads: StructuralReads = { rows: [], indices: [], covered: [] };
+const noStructuralReads: StructuralReads = { rows: [], indices: [], covered: [], recheck: [] };
 
 /**
  * The structural dependencies of a read. A create or delete names no component,
@@ -164,10 +169,10 @@ const noStructuralReads: StructuralReads = { rows: [], indices: [], covered: [] 
  */
 export const structuralReads = (query: Query): StructuralReads => {
   if (query.source === "") return noStructuralReads;
-  const { indices, covered } = composeDeclarations(
+  const { indices, covered, recheck } = composeDeclarations(
     INDEX_FAMILIES.map((family) => family.declare(query)),
   );
-  return { rows: [query.source], indices, covered };
+  return { rows: [query.source], indices, covered, recheck };
 };
 
 /** The field keys a selection projects, or `null` for the whole row. */

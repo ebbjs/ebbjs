@@ -15,7 +15,6 @@
 
 import {
   componentModel,
-  EBB_COMPONENTS,
   isFieldMap,
   structuralEqual,
   type EbbComponentKind,
@@ -410,8 +409,10 @@ export interface PatchShape {
   readonly projected: CompiledReadComponents;
   /**
    * Components whose change moves the row's place: the plan's predicates and
-   * ordering, a join's target, and membership for the `groupIds` every query
-   * row carries.
+   * ordering, and a join's target. Membership is not one: a projected row's
+   * `groupIds` is a projection of the relation, and a membership refile reaches
+   * the result through its membership keys (`patchableRows` declines it until a
+   * `groupIds` move can be patched in place).
    */
   readonly keys: CompiledReadComponents;
 }
@@ -436,9 +437,6 @@ export const patchShapeOf = (query: Query): PatchShape => {
   for (const join of query.joins) {
     for (const component of joinReadComponents(join)) keys.add(component);
   }
-  // `groupIds` rides on every query row, so a membership write is structural
-  // even when the plan names no membership predicate.
-  keys.add(EBB_COMPONENTS.membership);
   return {
     allowed:
       query.source !== "" &&

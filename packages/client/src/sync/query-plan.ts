@@ -42,10 +42,10 @@ export interface Plan {
   /**
    * The components the plan's operations read: the fields its predicates and
    * ordering name, the components its existence tests name, and the row models
-   * its edge, membership, and join indices read. A `collection` result keeps
-   * only the matching ids, so this set is its whole invalidation record; a
-   * projected-row result adds its selection, its joined targets, and membership
-   * — see `selectionReadComponents`.
+   * its edge and join indices read. A `collection` result keeps only the
+   * matching ids, so this set is its whole invalidation record; a projected-row
+   * result adds its selection and its joined targets, and keys membership on the
+   * ids it holds — see `selectionReadComponents`.
    */
   readonly readComponents: readonly string[];
 }
@@ -108,10 +108,13 @@ export const joinReadComponents = (join: Join): readonly string[] => {
  * chain (`source === ""`) reads no replica row and returns an empty set.
  *
  * A predicate names a source field component; existence names its component;
- * ordering reads its field; an adjacency or membership predicate reads the
- * edge/membership rows. The source model's row set is watched separately (a
- * create or delete names no component); only the components this read names
- * are leased. A value-view chain seeds the exact component it projects.
+ * ordering reads its field; an adjacency predicate reads the edge rows. A
+ * membership predicate reads no component at all: its dependency is the
+ * group's `scope` index (#961), and the rows it returns carry `groupIds`
+ * projected from the row index rather than from a component (#1011). The
+ * source model's row set is watched separately (a create or delete names no
+ * component); only the components this read names are leased. A value-view
+ * chain seeds the exact component it projects.
  */
 export const readComponentsFor = (query: Query): readonly string[] => {
   if (!isReplicaBacked(query)) return [];
@@ -123,13 +126,9 @@ export const readComponentsFor = (query: Query): readonly string[] => {
     }
   }
   if (query.order !== null) reads.add(componentName(query.source, query.order.field));
-  // Exact components: an edge read depends on the source's link component only,
-  // a membership read on membership rows only.
+  // Exact components: an edge read depends on the source's link component only.
   if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
     reads.add(EBB_COMPONENTS.link);
-  }
-  if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
-    reads.add(EBB_COMPONENTS.membership);
   }
   return [...reads];
 };

@@ -17,7 +17,7 @@ import { EBB_COMPONENTS } from "@ebbjs/core";
 import { flushTasks, isPlatformModel, linkAction, rowComponents, waitFor } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery } from "../query-plan";
-import { queryResultKey, selectionReadComponents } from "../selection";
+import { queryResultKey, selectionReadComponents, structuralReads } from "../selection";
 
 const todoQuery = (): Query => emptyQuery("todo");
 
@@ -613,7 +613,10 @@ describe("query results: component-granular invalidation", () => {
       ...emptyQuery("todo"),
       groups: [[{ kind: "membership", anyOf: ["group_1"] }]],
     };
-    expect(planQuery(query).readComponents).toEqual(["ebb/membership"]);
+    // A membership predicate reads the group's `scope` index rather than a
+    // component: `structuralReads` declares it, and the plan names none.
+    expect(planQuery(query).readComponents).toEqual([]);
+    expect(structuralReads(query).indices).toEqual([{ index: "scope", key: "group_1" }]);
     const source = sourceWith(() => ["todo_1"]);
     const store = results.watch("collection", query, source);
     store.subscribe(() => {});

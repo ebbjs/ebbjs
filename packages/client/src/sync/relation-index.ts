@@ -159,7 +159,7 @@ export const relationIndexFamily: IndexFamily = {
     for (const { as, type, keys } of relations.values()) {
       for (const target of keys) indices.push(relationDependency(as, type, target));
     }
-    return { indices, covered: relationCovers(query, relations) };
+    return { indices, covered: relationCovers(query, relations), recheck: [] };
   },
   resolver: () => relationSubjects,
 };
