@@ -7,6 +7,16 @@
 - Comments document intent for future maintainers. Don't narrate
   what the code does or explain choices visible in the code.
 
+## Client replica and query engine
+
+- Read `docs/adr/0006-change-movement.md` before changing
+  `packages/storage/src/replica/**` or
+  `packages/client/src/sync/{query,subscription,index,dependency}*`. It names
+  what is transitional, which issue deletes it, and which mechanisms are
+  load-bearing (`covered`, component dispatch keys).
+- Vocabulary lives in `CONTEXT.md`; decisions live in `docs/adr/`. A change
+  that contradicts an ADR needs a new ADR, not a comment.
+
 ## Worktrees
 
 - `ebb_server/deps` is git-ignored and holds a ~50 minute RocksDB build. Before
