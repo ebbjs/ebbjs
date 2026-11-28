@@ -21,6 +21,13 @@ interface Sub {
   readonly id: number;
 }
 
+/** The movement a change that moved nothing states. */
+const noMovement: ReplicaChange["delta"] = {
+  edges: [],
+  existence: { added: [], removed: [] },
+  membership: { before: null, after: null },
+};
+
 /** A component write: the change names what a reader can project. */
 const change = (id: string, components: readonly string[], revision: Revision): ReplicaChange => ({
   revision,
@@ -28,6 +35,7 @@ const change = (id: string, components: readonly string[], revision: Revision): 
   kind: "content",
   deleted: false,
   components,
+  delta: noMovement,
 });
 
 /** A row entering or leaving a model's set: no component list, just the model. */
@@ -38,6 +46,7 @@ const membership = (id: string, models: readonly string[], revision: Revision): 
   deleted: false,
   membership: "entered",
   models,
+  delta: noMovement,
 });
 
 /**

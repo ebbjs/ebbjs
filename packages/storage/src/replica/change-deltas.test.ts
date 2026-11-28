@@ -11,7 +11,7 @@ import {
 } from "@ebbjs/core";
 
 import { createReplica } from "./replica";
-import type { Replica } from "./types";
+import type { ChangeDelta, Replica } from "./types";
 
 /**
  * Fixtures for the journal's index delta: the edges, component existence and
@@ -208,6 +208,20 @@ const membership = (
 const ingest = (replica: Replica, write: Action, position: number): number =>
   replica.ingest(write, write.updates, position);
 
+/**
+ * Nothing moved: the three parts every change states instead of omitting the
+ * movement. A value-only write carries exactly this — never the pair the row
+ * still states, which would touch every scoped read on every value write.
+ */
+const noMovement: ChangeDelta = {
+  edges: [],
+  existence: { added: [], removed: [] },
+  membership: { before: null, after: null },
+};
+
+/** A movement in which `parts` moved and every other part is empty. */
+const moved = (parts: Partial<ChangeDelta>): ChangeDelta => ({ ...noMovement, ...parts });
+
 describe("replica: change delta (#1004)", () => {
   it("names a link write's added and removed targets under each (as, type)", () => {
     const replica = createReplica();
@@ -252,17 +266,17 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/link"],
-        delta: {
+        delta: moved({
           edges: [
             { as: "author", type: "wrote", added: ["target_b"], removed: ["target_a"] },
             { as: "tag", type: "labels", added: ["tag_2"], removed: [] },
           ],
-        },
+        }),
       },
     ]);
   });
 
-  it("omits the delta for a value write to an existing component", () => {
+  it("carries an empty movement for a value write to an existing component", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -290,8 +304,9 @@ describe("replica: change delta (#1004)", () => {
       2,
     );
 
-    // The component kept its place and changed its value: nothing arrived, so no
-    // existence change and no delta at all.
+    // The component kept its place and changed its value: nothing arrived, so
+    // every part of the movement is empty. The row states no pair here even
+    // though it carries components, because the pair it would name did not move.
     expect(replica.changesSince(1)).toStrictEqual([
       {
         revision: 2,
@@ -299,6 +314,7 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["todo/title"],
+        delta: noMovement,
       },
     ]);
   });
@@ -351,7 +367,7 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["todo/status"],
-        delta: { existence: { added: ["todo/status"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/status"], removed: [] } }),
       },
       {
         revision: 3,
@@ -359,7 +375,7 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["todo/status"],
-        delta: { existence: { added: [], removed: ["todo/status"] } },
+        delta: moved({ existence: { added: [], removed: ["todo/status"] } }),
       },
     ]);
   });
@@ -391,12 +407,12 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
-        delta: {
+        delta: moved({
           membership: {
             before: { entityId: "e_1", groupId: "g1" },
             after: { entityId: "e_1", groupId: "g2" },
           },
-        },
+        }),
       },
     ]);
   });
@@ -413,13 +429,13 @@ describe("replica: change delta (#1004)", () => {
         deleted: false,
         membership: "entered",
         models: ["ebb"],
-        delta: {
+        delta: moved({
           existence: { added: ["ebb/membership"], removed: [] },
           membership: {
             before: null,
             after: { entityId: "e_1", groupId: "g1" },
           },
-        },
+        }),
       },
     ]);
   });
@@ -452,17 +468,17 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
-        delta: {
+        delta: moved({
           membership: {
             before: { entityId: "e_1", groupId: "g1" },
             after: { entityId: "e_2", groupId: "g1" },
           },
-        },
+        }),
       },
     ]);
   });
 
-  it("carries no delta for a membership value write that keeps the pair", () => {
+  it("carries an empty movement for a membership value write that keeps the pair", () => {
     const replica = createReplica();
     ingest(replica, membership("a_1", "m_1", "g1", "e_1", 1, 10), 1);
     ingest(
@@ -481,9 +497,9 @@ describe("replica: change delta (#1004)", () => {
       2,
     );
 
-    // Neither the member nor the group moved: the value write carries no delta
-    // at all, which is what lets the membership resolver tell "no filing moved"
-    // from "the journal cannot say".
+    // Neither the member nor the group moved, so no side of the pair is named:
+    // a change that named the pair it kept would touch every scoped read on
+    // every value write.
     expect(replica.changesSince(1)).toStrictEqual([
       {
         revision: 2,
@@ -491,6 +507,7 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
+        delta: noMovement,
       },
     ]);
   });
@@ -521,13 +538,13 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["ebb/membership"],
-        delta: {
+        delta: moved({
           existence: { added: [], removed: ["ebb/membership"] },
           membership: {
             before: { entityId: "e_1", groupId: "g1" },
             after: null,
           },
-        },
+        }),
       },
     ]);
   });
@@ -546,12 +563,12 @@ describe("replica: change delta (#1004)", () => {
         deleted: true,
         membership: "left",
         models: ["ebb"],
-        delta: {
+        delta: moved({
           membership: {
             before: { entityId: "e_1", groupId: "g1" },
             after: null,
           },
-        },
+        }),
       },
     ]);
   });
@@ -579,7 +596,7 @@ describe("replica: change delta (#1004)", () => {
         deleted: false,
         membership: "entered",
         models: ["todo"],
-        delta: { existence: { added: ["todo/title"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/title"], removed: [] } }),
       },
     ]);
   });
@@ -598,23 +615,22 @@ describe("replica: change delta (#1004)", () => {
         deleted: false,
         membership: "left",
         models: ["ebb"],
-        delta: {
+        delta: moved({
           existence: { added: [], removed: ["ebb/membership"] },
           membership: {
             before: { entityId: "e_1", groupId: "g1" },
             after: null,
           },
-        },
+        }),
       },
     ]);
   });
 
-  it("carries no delta for a component-less row's arrival", () => {
+  it("carries an empty movement for a component-less row's arrival", () => {
     const replica = createReplica();
 
-    // An `ebb` row with no component moves into the row set carrying nothing.
-    // The journal records the entry and no delta at all, so a reader that keys
-    // on a filed subject cannot conclude "nothing filed moved" from it.
+    // An `ebb` row with no component moves into the row set carrying nothing,
+    // so every part of the movement is empty.
     ingest(
       replica,
       {
@@ -644,6 +660,7 @@ describe("replica: change delta (#1004)", () => {
         deleted: false,
         membership: "entered",
         models: ["ebb"],
+        delta: noMovement,
       },
     ]);
   });
@@ -688,7 +705,7 @@ describe("replica: change delta (#1004)", () => {
         deleted: false,
         membership: "entered",
         models: ["ebb"],
-        delta: { existence: { added: ["ebb/membership"], removed: [] } },
+        delta: moved({ existence: { added: ["ebb/membership"], removed: [] } }),
       },
       {
         revision: 2,
@@ -697,7 +714,7 @@ describe("replica: change delta (#1004)", () => {
         deleted: false,
         membership: "entered",
         models: ["ebb"],
-        delta: { existence: { added: ["ebb/membership"], removed: [] } },
+        delta: moved({ existence: { added: ["ebb/membership"], removed: [] } }),
       },
     ]);
   });
@@ -735,9 +752,9 @@ describe("replica: change delta (#1004)", () => {
         deleted: true,
         membership: "left",
         models: ["page"],
-        delta: {
+        delta: moved({
           edges: [{ as: "author", type: "wrote", added: [], removed: ["target_a", "target_b"] }],
-        },
+        }),
       },
     ]);
   });
@@ -777,7 +794,7 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["todo/status"],
-        delta: { existence: { added: ["todo/status"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/status"], removed: [] } }),
       },
       {
         revision: 3,
@@ -785,8 +802,74 @@ describe("replica: change delta (#1004)", () => {
         kind: "content",
         deleted: false,
         components: ["todo/status"],
-        delta: { existence: { added: [], removed: ["todo/status"] } },
+        delta: moved({ existence: { added: [], removed: ["todo/status"] } }),
       },
     ]);
+  });
+
+  it("states all three parts on every journal path a reader can reach", () => {
+    const replica = createReplica();
+    // One write per path: a row arriving with a component and an edge, a value
+    // change to it, a link move, a membership arrival, a membership refile, and
+    // then the departure an eviction journals.
+    ingest(
+      replica,
+      edges(
+        "a_1",
+        "page_1",
+        [{ as: "author", type: "wrote", targetId: "t_1", present: true }],
+        1,
+        10,
+      ),
+      1,
+    );
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_title",
+        entityId: "page_1",
+        model: "page",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("Title", "u_title", 20) },
+      }),
+      2,
+    );
+    ingest(
+      replica,
+      relink(
+        "a_3",
+        "page_1",
+        [{ as: "author", type: "wrote", targetId: "t_1", present: false }],
+        3,
+        30,
+      ),
+      3,
+    );
+    ingest(replica, membership("a_4", "m_1", "g1", "e_1", 4, 40), 4);
+    ingest(
+      replica,
+      patch({
+        actionId: "a_5",
+        updateId: "u_m_1_5",
+        entityId: "m_1",
+        model: "ebb",
+        gsn: 5,
+        ms: 50,
+        fields: { membership: leaf({ entity_id: "e_1", group_id: "g2" }, "u_m_1_5", 50) },
+      }),
+      5,
+    );
+    replica.evict(["page_1", "m_1"]);
+
+    const changes = replica.changesSince(0);
+    expect(changes.map((change) => change.revision)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    for (const change of changes) {
+      expect(Object.keys(change.delta).sort()).toEqual(["edges", "existence", "membership"]);
+      expect(Array.isArray(change.delta.edges)).toBe(true);
+      expect(Array.isArray(change.delta.existence.added)).toBe(true);
+      expect(Array.isArray(change.delta.existence.removed)).toBe(true);
+    }
   });
 });

@@ -17,6 +17,7 @@ export type { MembershipRow } from "./row-index";
 export { jsonBytes, utf8Bytes } from "./size";
 export type {
   ChangeDelta,
+  ChangeEdge,
   ContentChange,
   MembershipChange,
   MembershipQuery,

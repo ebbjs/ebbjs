@@ -33,40 +33,45 @@ export type ReplicaChange = ContentChange | MembershipChange;
  * The journal is the only place an old state is still in hand, so a derived
  * reader learns it here instead of guessing from the new row.
  *
- * Every part is optional and omitted when nothing moved, so a value write to an
- * existing component carries no delta at all.
+ * Every part is always present and states nothing moved when nothing did, so a
+ * reader never has to tell "nothing moved there" from "the journal cannot
+ * say". A value-only write carries all three parts empty — never the pair the
+ * row still states, which would touch every scoped read on every value write.
  */
 export interface ChangeDelta {
   /**
-   * Live target ids added and removed under each `(as, type)` on `ebb/link`.
-   * A tombstoned row contributes no live edges, so deleting a row removes all
-   * of its targets.
+   * One part per `(as, type)` whose targets moved on `ebb/link`, empty when no
+   * target moved. A tombstoned row contributes no live edges, so deleting a row
+   * removes all of its targets.
    */
-  readonly edges?: readonly {
-    readonly as: string;
-    readonly type: string;
-    readonly added: readonly string[];
-    readonly removed: readonly string[];
-  }[];
+  readonly edges: readonly ChangeEdge[];
   /**
    * Components whose existence changed, as opposed to their value. Not the
    * ephemeral Presence primitive: an entity carries a component or it does not.
    */
-  readonly existence?: {
+  readonly existence: {
     readonly added: readonly string[];
     readonly removed: readonly string[];
   };
   /**
    * The membership pair the row's `ebb/membership` stated on each side, `null`
-   * for a side that stated none. One part, because the value carries exactly
-   * one pair: a membership departure names both the entity and the group it
-   * left, which the removed row no longer states, and a refile names both
-   * sides.
+   * for a side that stated none and for both sides when no pair moved. One
+   * part, because the value carries exactly one pair: a membership departure
+   * names both the entity and the group it left, which the removed row no
+   * longer states, and a refile names both sides.
    */
-  readonly membership?: {
+  readonly membership: {
     readonly before: MembershipSide | null;
     readonly after: MembershipSide | null;
   };
+}
+
+/** The live targets one `(as, type)` gained and lost. */
+export interface ChangeEdge {
+  readonly as: string;
+  readonly type: string;
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
 }
 
 /**
@@ -85,11 +90,11 @@ interface ChangeBase {
   /** Whether the row is tombstoned after the change. */
   readonly deleted: boolean;
   /**
-   * Which index keys the change added and removed, when anything moved. It is
-   * what lets a reader resolve a relation or a scope from the change alone: a
-   * dropped edge or a group the row left is gone from the row itself.
+   * Which index keys the change added and removed. It is what lets a reader
+   * resolve a relation or a scope from the change alone: a dropped edge or a
+   * group the row left is gone from the row itself.
    */
-  readonly delta?: ChangeDelta;
+  readonly delta: ChangeDelta;
 }
 
 /** A change to the values of a row that stayed in the set it was read from. */

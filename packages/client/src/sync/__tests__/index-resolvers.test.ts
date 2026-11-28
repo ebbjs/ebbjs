@@ -4,16 +4,22 @@
  * A query read declares the derived indices its predicates and joins read, and
  * the registry's resolvers turn a change (and its journal delta) back into the
  * keys it may have moved. Dispatch then touches the subscriptions whose key
- * changed instead of every subscription that reads the component — while a
- * change whose shape cannot say what moved (a link write or membership change
- * with no delta) still touches every reader of that index, which is the breadth
- * the component read set gave before.
+ * changed instead of every subscription that reads the component.
+ *
+ * Every journal entry states its whole movement (#1024), so the fixtures here
+ * build complete deltas. The `null` fallback these resolvers still carry is
+ * reached only by the `stateless` fixtures and is deleted by #1025.
  */
 
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica, type ReplicaChange } from "@ebbjs/storage/replica";
+import {
+  createReplica,
+  type ChangeDelta,
+  type Replica,
+  type ReplicaChange,
+} from "@ebbjs/storage/replica";
 
 import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
@@ -228,41 +234,65 @@ const resolveFor = (replica: Replica, index: string) => {
   throw new Error(`no resolver for ${index}`);
 };
 
+/**
+ * Nothing moved. Every journal entry states all three parts, so a fixture that
+ * names only what its case is about spreads this and overrides that part.
+ */
+const noMovement: ChangeDelta = {
+  edges: [],
+  existence: { added: [], removed: [] },
+  membership: { before: null, after: null },
+};
+
 const content = (
   revision: number,
   id: string,
   components: readonly string[],
-  delta?: ReplicaChange["delta"],
-): ReplicaChange =>
-  delta === undefined
-    ? { revision, id, kind: "content", deleted: false, components }
-    : { revision, id, kind: "content", deleted: false, components, delta };
+  delta: Partial<ChangeDelta> = {},
+): ReplicaChange => ({
+  revision,
+  id,
+  kind: "content",
+  deleted: false,
+  components,
+  delta: { ...noMovement, ...delta },
+});
 
 const membership = (
   revision: number,
   id: string,
   transition: "entered" | "left" | "changed-model",
   models: readonly string[],
-  delta?: ReplicaChange["delta"],
+  delta: Partial<ChangeDelta> = {},
+): ReplicaChange => ({
+  revision,
+  id,
+  kind: "membership",
+  deleted: transition === "left",
+  membership: transition,
+  models,
+  delta: { ...noMovement, ...delta },
+});
+
+/**
+ * A change with no delta at all — the shape the type now forbids and #1025
+ * deletes the fallback for. Only the transitional fallback tests below build
+ * one, so the rest of the file is written against the complete shape.
+ */
+const stateless = (
+  revision: number,
+  id: string,
+  transition: "entered" | "left" | "changed-model",
+  models: readonly string[],
 ): ReplicaChange =>
-  delta === undefined
-    ? {
-        revision,
-        id,
-        kind: "membership",
-        deleted: transition === "left",
-        membership: transition,
-        models,
-      }
-    : {
-        revision,
-        id,
-        kind: "membership",
-        deleted: transition === "left",
-        membership: transition,
-        models,
-        delta,
-      };
+  ({
+    revision,
+    id,
+    kind: "membership",
+    deleted: transition === "left",
+    membership: transition,
+    models,
+  }) as ReplicaChange;
 
 describe("index resolvers: observation", () => {
   it("keeps the changed row for a relation change that names no edge", () => {
@@ -298,10 +328,12 @@ describe("index resolvers: observation", () => {
     ).toEqual(["issue_1"]);
   });
 
-  it("falls back when a link write carries no delta", () => {
+  it("falls back only for the prefix-compatible shape with no delta (#1025)", () => {
     const resolve = resolveFor(replicaWith([]), "relation:assignee/issue");
 
-    expect(resolve(content(1, "issue_1", ["ebb/link"]))).toBeNull();
+    // Transitional: every journal path now states a movement, so this shape is
+    // unreachable from the replica and #1025 deletes the branch.
+    expect(resolve(stateless(1, "issue_1", "left", ["issue"]))).toBeNull();
   });
 
   it("answers a membership change's delta, and falls back without one", () => {
@@ -314,7 +346,8 @@ describe("index resolvers: observation", () => {
         }),
       ),
     ).toEqual(["issue_1", "user_1"]);
-    expect(resolve(membership(2, "issue_1", "left", ["issue"]))).toBeNull();
+    // Transitional until #1025: a delta that moved no edge says so itself.
+    expect(resolve(membership(2, "issue_1", "left", ["issue"]))).toEqual(["issue_1"]);
   });
 
   it("falls back rather than guess from a malformed relation index name", () => {
@@ -385,7 +418,7 @@ describe("index resolvers: existence", () => {
     expect(resolve(content(2, "todo_1", ["todo/title"]))).toEqual([]);
   });
 
-  it("answers an eviction's existence delta, and falls back only when no delta arrived", () => {
+  it('answers an eviction\'s existence delta, and reads an empty part as "nothing stayed"', () => {
     const resolve = resolveFor(replicaWith([]), "exists:todo/due");
 
     expect(
@@ -395,8 +428,8 @@ describe("index resolvers: existence", () => {
         }),
       ),
     ).toEqual(["todo/due"]);
-    // No delta at all: the journal cannot say what the row took with it.
-    expect(resolve(membership(2, "todo_1", "left", ["todo"]))).toBeNull();
+    // A delta that moved no existence says `todo/due` stayed.
+    expect(resolve(membership(2, "todo_1", "left", ["todo"]))).toEqual([]);
     // A delta that moved another component's existence says `todo/due` stayed.
     expect(
       resolve(
@@ -445,8 +478,9 @@ describe("index resolvers: scope", () => {
     expect(resolve(content(2, "todo_1", ["ebb/membership"]))).toEqual([]);
   });
 
-  it("falls back only for a membership change that carries no delta", () => {
-    expect(resolve(membership(1, "page_1", "left", ["page"]))).toBeNull();
+  it("answers no group for a membership change that moved no pair", () => {
+    // A departure that filed nobody names no pair, so no scoped read is touched.
+    expect(resolve(membership(1, "page_1", "left", ["page"]))).toEqual([]);
     // A delta that moved other things — `parent` here — moved no pair, so no
     // scoped read is touched.
     expect(

@@ -3,15 +3,13 @@ import { linkEdges, systemValueString, type Entity, type LinkEdge } from "@ebbjs
 import { componentSetDelta } from "../internal/component-index";
 
 import { sourceRow } from "./row-index";
-import type { ChangeDelta, MembershipSide } from "./types";
+import type { ChangeDelta, ChangeEdge, MembershipSide } from "./types";
 
 /** One row's state on one side of a change: the row and the components it carries. */
 export interface ChangeSides {
   readonly row: Entity | null;
   readonly components: readonly string[];
 }
-
-type EdgePart = NonNullable<ChangeDelta["edges"]>[number];
 
 interface EdgeGroup {
   readonly as: string;
@@ -44,10 +42,10 @@ const groupEdges = (row: Entity | null): ReadonlyMap<string, EdgeGroup> => {
 };
 
 /** Every `(as, type)` whose targets moved, ascending by `as` then `type`. */
-const edgeDelta = (before: Entity | null, after: Entity | null): ChangeDelta["edges"] => {
+const edgeDelta = (before: Entity | null, after: Entity | null): readonly ChangeEdge[] => {
   const previous = groupEdges(before);
   const next = groupEdges(after);
-  const parts: EdgePart[] = [];
+  const parts: ChangeEdge[] = [];
   for (const key of [...new Set([...previous.keys(), ...next.keys()])].sort()) {
     const beforeGroup = previous.get(key);
     const afterGroup = next.get(key);
@@ -60,7 +58,7 @@ const edgeDelta = (before: Entity | null, after: Entity | null): ChangeDelta["ed
     if (group === undefined) continue;
     parts.push({ as: group.as, type: group.type, added, removed });
   }
-  return parts.length === 0 ? undefined : parts;
+  return parts;
 };
 
 /** Components one side carries and the other does not, which is existence moving. */
@@ -70,7 +68,7 @@ const existenceDelta = (
   after: readonly string[],
 ): ChangeDelta["existence"] => {
   const delta = componentSetDelta(id, before, after);
-  return delta === null ? undefined : { added: delta.add, removed: delta.remove };
+  return delta === null ? { added: [], removed: [] } : { added: delta.add, removed: delta.remove };
 };
 
 /**
@@ -90,7 +88,12 @@ const membershipOf = (row: Entity | null): MembershipSide | null => {
   return { entityId, groupId };
 };
 
-/** The pairs a change moved a row between: a move names both, leaving names one. */
+/**
+ * The pair a change moved a row between: a move names both, a departure names
+ * the one it left. A side that did not move is `null`, so a value write that
+ * kept its pair names neither — otherwise every value write would touch every
+ * read scoped to its group.
+ */
 const membershipDelta = (
   before: Entity | null,
   after: Entity | null,
@@ -98,7 +101,7 @@ const membershipDelta = (
   const previous = membershipOf(before);
   const next = membershipOf(after);
   if (previous?.entityId === next?.entityId && previous?.groupId === next?.groupId) {
-    return undefined;
+    return { before: null, after: null };
   }
   return { before: previous, after: next };
 };
@@ -107,26 +110,19 @@ const membershipDelta = (
  * What a change moved in the index: the edges, component existence and the
  * membership pair on both sides. Only a write that still holds the old state
  * can answer this, which is why the journal records it rather than a reader
- * deriving it from the row. `undefined` when nothing moved.
+ * deriving it from the row.
+ *
+ * Every part is present and empty when nothing moved, so a reader resolves a
+ * change without a "cannot say" branch. The parts are a diff of the row's
+ * canonical keys: storage names no query index, and a derived index over the
+ * same relation needs no change here.
  */
 export const changeDeltaOf = (
   id: string,
   before: ChangeSides,
   after: ChangeSides,
-): ChangeDelta | undefined => {
-  const edges = edgeDelta(before.row, after.row);
-  const existence = existenceDelta(id, before.components, after.components);
-  const membership = membershipDelta(before.row, after.row);
-  if (edges === undefined && existence === undefined && membership === undefined) {
-    return undefined;
-  }
-  const delta: {
-    edges?: ChangeDelta["edges"];
-    existence?: ChangeDelta["existence"];
-    membership?: ChangeDelta["membership"];
-  } = {};
-  if (edges !== undefined) delta.edges = edges;
-  if (existence !== undefined) delta.existence = existence;
-  if (membership !== undefined) delta.membership = membership;
-  return delta;
-};
+): ChangeDelta => ({
+  edges: edgeDelta(before.row, after.row),
+  existence: existenceDelta(id, before.components, after.components),
+  membership: membershipDelta(before.row, after.row),
+});

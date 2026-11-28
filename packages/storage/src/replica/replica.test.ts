@@ -14,7 +14,7 @@ import {
 import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
 import type { ReplicaRecord } from "../types/replica-store";
 import { createReplica } from "./replica";
-import type { Replica } from "./types";
+import type { ChangeDelta, Replica } from "./types";
 
 const leaf = (value: unknown, updateId: string, ms: number): FieldValue => ({
   value,
@@ -184,6 +184,19 @@ const membership = (
 
 const ingest = (replica: Replica, write: Action, position: number): number =>
   replica.ingest(write, write.updates, position);
+
+/**
+ * A change that moved nothing. Every journal entry states all three parts, so a
+ * value-only write carries this instead of omitting the movement.
+ */
+const noMovement: ChangeDelta = {
+  edges: [],
+  existence: { added: [], removed: [] },
+  membership: { before: null, after: null },
+};
+
+/** A movement in which `parts` moved and every other part is empty. */
+const moved = (parts: Partial<ChangeDelta>): ChangeDelta => ({ ...noMovement, ...parts });
 
 const entity = (overrides: Partial<Entity> = {}): Entity => ({
   id: "e_1",
@@ -439,12 +452,26 @@ describe("replica: durable fold", () => {
         deleted: false,
         membership: "entered",
         models: ["todo"],
-        delta: { existence: { added: ["todo/title"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/title"], removed: [] } }),
       },
-      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["todo/title"] },
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "content",
+        deleted: false,
+        components: ["todo/title"],
+        delta: noMovement,
+      },
     ]);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["todo/title"] },
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "content",
+        deleted: false,
+        components: ["todo/title"],
+        delta: noMovement,
+      },
     ]);
     expect(replica.changesSince(2)).toEqual([]);
   });
@@ -471,7 +498,7 @@ describe("replica: durable fold", () => {
         deleted: false,
         membership: "entered",
         models: ["note"],
-        delta: { existence: { added: ["note/title", "note/status"], removed: [] } },
+        delta: moved({ existence: { added: ["note/title", "note/status"], removed: [] } }),
       },
     ]);
 
@@ -490,7 +517,14 @@ describe("replica: durable fold", () => {
 
     // The plan component's leaf is untouched, so only the title changes.
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["note/title"] },
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "content",
+        deleted: false,
+        components: ["note/title"],
+        delta: noMovement,
+      },
     ]);
   });
 
@@ -527,7 +561,7 @@ describe("replica: durable fold", () => {
         kind: "content",
         deleted: false,
         components: ["todo/draft"],
-        delta: { existence: { added: [], removed: ["todo/draft"] } },
+        delta: moved({ existence: { added: [], removed: ["todo/draft"] } }),
       },
     ]);
   });
@@ -554,6 +588,7 @@ describe("replica: durable fold", () => {
         deleted: true,
         membership: "left",
         models: ["todo"],
+        delta: noMovement,
       },
     ]);
   });
@@ -990,6 +1025,7 @@ describe("replica: residency is the row's, not a declaration (#943)", () => {
         deleted: false,
         membership: "entered",
         models: ["cold"],
+        delta: noMovement,
       },
     ]);
   });
@@ -1037,7 +1073,7 @@ describe("replica: residency is the row's, not a declaration (#943)", () => {
         kind: "content",
         deleted: false,
         components: ["cold/keep", "cold/body"],
-        delta: { existence: { added: [], removed: ["cold/keep", "cold/body"] } },
+        delta: moved({ existence: { added: [], removed: ["cold/keep", "cold/body"] } }),
       },
     ]);
   });
@@ -1159,6 +1195,7 @@ describe("replica: evict (#499)", () => {
         delta: {
           edges: [{ as: "author", type: "wrote", added: [], removed: ["tgt_1"] }],
           existence: { added: [], removed: ["ebb/link"] },
+          membership: { before: null, after: null },
         },
       },
       {
@@ -1169,6 +1206,7 @@ describe("replica: evict (#499)", () => {
         membership: "left",
         models: ["ebb"],
         delta: {
+          edges: [],
           existence: { added: [], removed: ["ebb/membership"] },
           membership: {
             before: { entityId: "e_1", groupId: "grp_1" },
@@ -1235,7 +1273,7 @@ describe("replica: journal capacity (#499)", () => {
         deleted: false,
         membership: "entered",
         models: ["todo"],
-        delta: { existence: { added: ["todo/title"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/title"], removed: [] } }),
       },
       {
         revision: 5,
@@ -1244,7 +1282,7 @@ describe("replica: journal capacity (#499)", () => {
         deleted: false,
         membership: "entered",
         models: ["todo"],
-        delta: { existence: { added: ["todo/title"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/title"], removed: [] } }),
       },
       {
         revision: 6,
@@ -1253,7 +1291,7 @@ describe("replica: journal capacity (#499)", () => {
         deleted: false,
         membership: "entered",
         models: ["todo"],
-        delta: { existence: { added: ["todo/title"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/title"], removed: [] } }),
       },
     ]);
   });
@@ -1774,6 +1812,7 @@ describe("replica: a row a read installs from the store (#500)", () => {
         delta: {
           edges: [{ as: "author", type: "wrote", added: ["target_1"], removed: [] }],
           existence: { added: ["ebb/link"], removed: [] },
+          membership: { before: null, after: null },
         },
       },
     ]);
@@ -1810,6 +1849,7 @@ describe("replica: a row a read installs from the store (#500)", () => {
         delta: {
           edges: [{ as: "author", type: "wrote", added: ["target_1"], removed: [] }],
           existence: { added: ["ebb/link"], removed: [] },
+          membership: { before: null, after: null },
         },
       },
     ]);
@@ -1923,7 +1963,7 @@ describe("replica: a row a read installs from the store (#500)", () => {
         deleted: false,
         membership: "entered",
         models: ["page"],
-        delta: { existence: { added: ["page/title"], removed: [] } },
+        delta: moved({ existence: { added: ["page/title"], removed: [] } }),
       },
     ]);
   });
@@ -2155,7 +2195,7 @@ describe("replica: a row a read installs from the store (#500)", () => {
         deleted: false,
         membership: "entered",
         models: ["document"],
-        delta: { existence: { added: ["document/text"], removed: [] } },
+        delta: moved({ existence: { added: ["document/text"], removed: [] } }),
       },
     ]);
     expect(replica.toRecord().entities).toHaveLength(1);
@@ -2492,7 +2532,7 @@ describe("replica: content and membership changes (#939)", () => {
         membership: "entered",
         models: ["todo"],
         deleted: false,
-        delta: { existence: { added: ["todo/title", "todo/status"], removed: [] } },
+        delta: moved({ existence: { added: ["todo/title", "todo/status"], removed: [] } }),
       },
     ]);
   });
@@ -2519,6 +2559,9 @@ describe("replica: content and membership changes (#939)", () => {
         membership: "left",
         models: ["todo"],
         deleted: true,
+        // A tombstone keeps the components it carried, so only the row's place
+        // moved: the delete names no pair because the row filed none.
+        delta: noMovement,
       },
     ]);
   });
@@ -2548,7 +2591,14 @@ describe("replica: content and membership changes (#939)", () => {
     );
 
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", kind: "content", components: ["todo/title"], deleted: false },
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "content",
+        components: ["todo/title"],
+        deleted: false,
+        delta: noMovement,
+      },
     ]);
   });
 
@@ -2578,7 +2628,9 @@ describe("replica: content and membership changes (#939)", () => {
         models: ["note", "todo"],
         deleted: false,
         delta: {
+          edges: [],
           existence: { added: ["todo/title"], removed: ["note/title"] },
+          membership: { before: null, after: null },
         },
       },
     ]);
@@ -2602,7 +2654,7 @@ describe("replica: content and membership changes (#939)", () => {
         membership: "left",
         models: ["todo"],
         deleted: false,
-        delta: { existence: { added: [], removed: ["todo/title"] } },
+        delta: moved({ existence: { added: [], removed: ["todo/title"] } }),
       },
     ]);
   });
@@ -2663,7 +2715,7 @@ describe("replica: content and membership changes (#939)", () => {
           membership: "entered",
           models: ["document"],
           deleted: false,
-          delta: { existence: { added: ["document/text"], removed: [] } },
+          delta: moved({ existence: { added: ["document/text"], removed: [] } }),
         },
       ]);
     });
@@ -2700,6 +2752,7 @@ describe("replica: content and membership changes (#939)", () => {
           membership: "entered",
           models: ["document"],
           deleted: false,
+          delta: noMovement,
         },
         {
           revision: 2,
@@ -2707,7 +2760,7 @@ describe("replica: content and membership changes (#939)", () => {
           kind: "content",
           components: ["document/text"],
           deleted: false,
-          delta: { existence: { added: ["document/text"], removed: [] } },
+          delta: moved({ existence: { added: ["document/text"], removed: [] } }),
         },
         {
           revision: 3,
@@ -2715,6 +2768,7 @@ describe("replica: content and membership changes (#939)", () => {
           kind: "content",
           components: ["document/text"],
           deleted: false,
+          delta: noMovement,
         },
       ]);
     });
@@ -2744,7 +2798,7 @@ describe("replica: content and membership changes (#939)", () => {
           membership: "entered",
           models: ["document"],
           deleted: false,
-          delta: { existence: { added: ["document/text"], removed: [] } },
+          delta: moved({ existence: { added: ["document/text"], removed: [] } }),
         },
       ]);
     });
@@ -2780,6 +2834,7 @@ describe("replica: content and membership changes (#939)", () => {
         delta: {
           edges: [{ as: "author", type: "wrote", added: [], removed: ["target_1"] }],
           existence: { added: [], removed: ["ebb/link"] },
+          membership: { before: null, after: null },
         },
       },
     ]);
